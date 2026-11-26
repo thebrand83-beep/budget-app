@@ -3,3 +3,4 @@ node_modules/
 *.local
 .env*
 tests/out/
+__pycache__/

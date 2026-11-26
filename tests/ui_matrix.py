@@ -5,7 +5,7 @@
 # env: PLATFORM (chrome|firefox|webkit|iphone|android), BASE, BUDGET_TEST_EMAIL, BUDGET_TEST_PASSWORD, SHOTS (optional dir)
 import asyncio, os, sys, json, pathlib, zipfile, io
 sys.path.insert(0, os.path.dirname(__file__))
-from platforms import launch
+from platforms import launch, guard
 from playwright.async_api import async_playwright
 BASE = os.environ.get('BASE', 'https://thebrand83-beep.github.io/budget-app/')
 EMAIL, PASSWORD = os.environ['BUDGET_TEST_EMAIL'], os.environ['BUDGET_TEST_PASSWORD']
@@ -26,7 +26,7 @@ OVERFLOW = """() => { const W = document.documentElement.clientWidth; const bad 
 async def main():
     async with async_playwright() as p:
         b, kw, MOBILE = await launch(p, PLATFORM)
-        ctx = await b.new_context(**kw)
+        ctx = await guard(await b.new_context(**kw))
         pg = await ctx.new_page()
         pg.on('pageerror', lambda e: log.append('pageerror: ' + str(e)))
         pg.on('dialog', lambda d: (log.append('NATIVE DIALOG: ' + d.message), asyncio.ensure_future(d.dismiss())))
@@ -47,11 +47,10 @@ async def main():
         check('שגויים' in await pg.inner_text('#lMsg'), 'wrong password shows Hebrew error', await pg.inner_text('#lMsg'))
         await click('[data-auth="signup"]'); await pg.wait_for_timeout(300)
         await no_overflow('signup')
-        await pg.route('**/auth/v1/signup**', lambda r: r.fulfill(status=200, content_type='application/json', body=json.dumps({'id': '00000000-0000-0000-0000-000000000001', 'aud': 'authenticated', 'role': '', 'email': 'new-user@example.com', 'identities': [{}], 'created_at': '2026-01-01T00:00:00Z'})))
-        await pg.fill('#lEmail', 'new-user@example.com'); await pg.fill('#lPass', 'abcdefgh123'); await click('#lBtn')
+        await pg.fill('#lEmail', 'mock-signup@example.invalid'); await pg.fill('#lPass', 'abcdefgh123'); await click('#lBtn')
         await pg.wait_for_selector('#lMsg .msg', timeout=20000)
-        check('שלחנו לך מייל' in await pg.inner_text('#lMsg'), 'sign-up shows "confirm your e-mail" message', await pg.inner_text('#lMsg'))
-        await pg.unroute('**/auth/v1/signup**')
+        check('שלחנו לך מייל' in await pg.inner_text('#lMsg'), 'sign-up shows "confirm your e-mail" message (mocked, no e-mail sent)', await pg.inner_text('#lMsg'))
+        check(await pg.evaluate("window.__blockedEmailCalls.length") == 1, 'sign-up request stayed in the browser (email guard)')
         await click('[data-auth="login"]'); await pg.wait_for_timeout(300)
 
         # ---- login (real) and clean slate for this test user

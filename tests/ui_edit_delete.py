@@ -4,7 +4,7 @@
 # env: BUDGET_TEST_EMAIL, BUDGET_TEST_PASSWORD, BASE, MOBILE=1, ENGINE=webkit
 import asyncio, os, json, datetime
 from playwright.async_api import async_playwright
-import sys; sys.path.insert(0, os.path.dirname(__file__)); from platforms import launch
+import sys; sys.path.insert(0, os.path.dirname(__file__)); from platforms import launch, guard
 BASE = os.environ.get('BASE', 'http://127.0.0.1:8841/')
 EMAIL, PASSWORD = os.environ['BUDGET_TEST_EMAIL'], os.environ['BUDGET_TEST_PASSWORD']
 assert EMAIL.startswith('budget-e2e-ui-'), 'test users only'
@@ -30,7 +30,7 @@ SERVER = """async () => { const sb = window.__budget.store.sb;
 async def main():
     async with async_playwright() as p:
         b, kw, MOBILE = await launch(p, PLATFORM)
-        ctx = await b.new_context(**kw)
+        ctx = await guard(await b.new_context(**kw))
         pg = await ctx.new_page()
         pg.on('pageerror', lambda e: log.append('pageerror: ' + str(e)))
         pg.on('dialog', lambda d: (log.append('NATIVE DIALOG (should not happen): ' + d.message), asyncio.ensure_future(d.dismiss())))

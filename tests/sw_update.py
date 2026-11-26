@@ -3,7 +3,7 @@
 # the page to pick up the new version by itself (controllerchange -> reload) with the old cache removed.
 import asyncio, os, sys, shutil, subprocess, time, pathlib
 sys.path.insert(0, os.path.dirname(__file__))
-from platforms import launch
+from platforms import launch, guard
 from playwright.async_api import async_playwright
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PLATFORM = os.environ.get('PLATFORM', 'chrome'); PORT = 8843
@@ -16,7 +16,7 @@ async def main():
     try:
         async with async_playwright() as p:
             b, kw, _ = await launch(p, PLATFORM)
-            ctx = await b.new_context(**kw); pg = await ctx.new_page()
+            ctx = await guard(await b.new_context(**kw)); pg = await ctx.new_page()
             url = f'http://localhost:{PORT}/'
             await pg.goto(url); await pg.evaluate("navigator.serviceWorker.ready.then(()=>1)")
             await pg.reload(); await pg.wait_for_timeout(1500)

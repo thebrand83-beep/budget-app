@@ -20,13 +20,14 @@ const users = [];
 const KEEP = process.env.KEEP_TEST_USER === '1';  // keep user A for the UI screenshot run, cleaned by --cleanup
 if (process.argv.includes('--cleanup')) { await cleanup(); process.exit(0); }
 try {
-  // open sign-up: a stranger CAN register (email confirmation required). With the built-in mailer the confirmation
-  // mail to a non-team address may be refused; either way the endpoint must not say "Signups not allowed".
+  // open sign-up with e-mail confirmation, checked through the project's auth settings. NO real sign-up call:
+  // it would e-mail a confirmation through the live SMTP (Gmail) to a fake address and bounce. Test users below
+  // are created with the admin API (email_confirm: true), which sends no e-mail.
   const anonC = createClient(URL_, ANON, { auth: { persistSession: false } });
-  const su = await anonC.auth.signUp({ email: `budget-e2e-stranger-${stamp}@example.com`, password: pw });
-  assert.ok(!/signups? not allowed/i.test(su.error?.message || ''), 'sign-up should be open');
-  assert.ok(!su.data?.session, 'no session before email confirmation');
-  ok('public sign-up is open, no session until the email is confirmed (' + (su.error ? 'mailer: ' + su.error.message : 'user created, awaiting confirmation') + ')');
+  const authCfg = await mgmt(`/projects/${REF}/config/auth`);
+  assert.equal(authCfg.disable_signup, false, 'sign-up should be open');
+  assert.equal(authCfg.mailer_autoconfirm, false, 'e-mail confirmation required');
+  ok('public sign-up is open and requires e-mail confirmation (settings check, no e-mail sent)');
   // two confirmed users (as if both confirmed their email)
   for (const e of [A, B]) { const { data, error } = await admin.auth.admin.createUser({ email: e, password: pw, email_confirm: true }); if (error) throw error; users.push(data.user); }
   const a = createClient(URL_, ANON, { auth: { persistSession: false } }); await a.auth.signInWithPassword({ email: A, password: pw });
