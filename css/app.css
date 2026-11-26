@@ -35,6 +35,14 @@ svg.i{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .sync i{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
 .sync[data-s="local"] i{background:var(--amber);box-shadow:0 0 10px var(--amber)}
 .sync[data-s="off"] i{background:var(--red);box-shadow:0 0 10px var(--red)}
+.sync{cursor:pointer;white-space:nowrap}
+.sync[data-s="busy"] i{background:var(--amber);box-shadow:0 0 10px var(--amber);animation:syncp 1s ease-in-out infinite alternate}
+@keyframes syncp{from{opacity:.35}to{opacity:1}}
+.pend-b{display:none;margin-inline-start:6px;font-size:.68rem;padding:1px 7px;border-radius:99px;background:rgba(232,176,75,.14);color:var(--amber);white-space:nowrap}
+.tx.pending .pend-b{display:inline-flex}
+.pend-b .p-off,body[data-net="off"] .pend-b .p-on{display:none}
+body[data-net="off"] .pend-b .p-off{display:inline}
+body[data-net="off"] .pend-b{background:rgba(229,95,95,.14);color:var(--red)}
 
 /* desktop tabs */
 .tabs{display:none}

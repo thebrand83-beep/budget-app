@@ -22,13 +22,13 @@ async def main():
             await pg.reload(); await pg.wait_for_timeout(1500)
             before = await pg.evaluate("(async()=>({ctl:!!navigator.serviceWorker.controller, keys: await caches.keys(), v: document.querySelector('meta[name=app-version]').content}))()")
             # deploy "v3"
-            (d / 'sw.js').write_text((d / 'sw.js').read_text().replace("'budget-v2'", "'budget-v3test'"))
-            (d / 'index.html').write_text((d / 'index.html').read_text().replace('name="app-version" content="2"', 'name="app-version" content="3"'))
+            (d / 'sw.js').write_text((d / 'sw.js').read_text().replace("'budget-v3'", "'budget-v4test'"))
+            (d / 'index.html').write_text((d / 'index.html').read_text().replace('name="app-version" content="3"', 'name="app-version" content="4"'))
             async with pg.expect_navigation(timeout=30000):
                 await pg.evaluate("dispatchEvent(new Event('focus'))")
             await pg.wait_for_timeout(2000)
             after = await pg.evaluate("(async()=>({ctl:!!navigator.serviceWorker.controller, keys: await caches.keys(), v: document.querySelector('meta[name=app-version]').content}))()")
-            ok = before['ctl'] and before['v'] == '2' and after['v'] == '3' and after['keys'] == ['budget-v3test']
+            ok = before['ctl'] and before['v'] == '3' and after['v'] == '4' and after['keys'] == ['budget-v4test']
             print('before', before, 'after', after)
             await b.close()
     finally:

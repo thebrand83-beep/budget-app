@@ -1,6 +1,6 @@
 # Cross-platform matrix against the LIVE site + real cloud (throw-away test user only).
 # Covers: login/sign-up screens, Hebrew auth errors, RTL + no horizontal overflow on every screen and sheet,
-# receipt upload (photo + PDF) and viewing via signed URL, CSV/XLSX/ZIP/PDF exports, service worker active (budget-v2).
+# receipt upload (photo + PDF) and viewing via signed URL, CSV/XLSX/ZIP/PDF exports, service worker active (budget-v3), upload progress + sync status.
 # Sign-up submit is answered by a mocked /auth/v1/signup so no real e-mail is sent to fake addresses.
 # env: PLATFORM (chrome|firefox|webkit|iphone|android), BASE, BUDGET_TEST_EMAIL, BUDGET_TEST_PASSWORD, SHOTS (optional dir)
 import asyncio, os, sys, json, pathlib, zipfile, io
@@ -40,7 +40,7 @@ async def main():
 
         # ---- auth screens
         await pg.goto(BASE); await pg.wait_for_selector('#loginF', timeout=30000); await pg.wait_for_timeout(600)
-        check(await pg.evaluate("document.querySelector('meta[name=app-version]').content") == '2', 'live serves version 2')
+        check(await pg.evaluate("document.querySelector('meta[name=app-version]').content") == '3', 'live serves version 3')
         await no_overflow('login')
         await pg.fill('#lEmail', EMAIL); await pg.fill('#lPass', 'wrong-password-1'); await click('#lBtn')
         await pg.wait_for_selector('#lMsg .msg', timeout=20000)
@@ -67,7 +67,7 @@ async def main():
 
         # ---- service worker controls the page and uses the v2 cache
         sw = await pg.evaluate("""(async()=>{ if(!('serviceWorker' in navigator)) return 'unsupported'; const r = await navigator.serviceWorker.ready; await new Promise(r=>setTimeout(r,1500)); const keys = await caches.keys(); return { active: !!r.active, controlled: !!navigator.serviceWorker.controller, keys }; })()""")
-        check(sw != 'unsupported' and sw['active'] and 'budget-v2' in sw['keys'] and 'budget-v1' not in sw['keys'], 'service worker active with cache budget-v2 only', sw)
+        check(sw != 'unsupported' and sw['active'] and sw['keys'] == ['budget-v3'], 'service worker active with cache budget-v3 only', sw)
 
         # ---- every screen: RTL and no overflow
         await no_overflow('overview')
@@ -84,7 +84,13 @@ async def main():
             await click('#fab'); await pg.wait_for_selector('#fAmt')
             await pg.fill('#fAmt', '64.5'); await pg.fill('#fTitle', title); await click('#fCats button')
             await pg.set_input_files('#fFile', str(FX / fx)); await pg.wait_for_timeout(900)
-            await click('#fSave'); await pg.wait_for_selector('#fSave', state='detached', timeout=40000); await pg.wait_for_timeout(800)
+            await pg.evaluate("window.__up = []; window.__budget.store.onStatus(s => s.upload && window.__up.push(s.upload.pct)); 0")
+            await click('#fSave'); await pg.wait_for_selector('#fSave', state='detached', timeout=40000)
+            await pg.wait_for_function("window.__budget.store.status.pending === 0", timeout=120000); await pg.wait_for_timeout(500)
+            ups = await pg.evaluate("window.__up")
+            check(len(ups) > 0 and max(ups) == 100, f'{kind} receipt upload reports progress up to 100%', ups)
+            await pg.evaluate("(async () => { const p = window.__budget.txs.find(t => t.title === '%s')?.receipt_path; const { error } = await window.__budget.store.sb.storage.from('budget-receipts').createSignedUrl(p, 60); window.__rcOk = !error; })()" % title)
+            check(await pg.evaluate("window.__rcOk"), f'{kind} receipt is stored in the cloud after sync')
             path = await pg.evaluate(f"window.__budget.txs.find(t=>t.title==='{title}')?.receipt_path")
             check(bool(path) and path.count('/') == 2, f'{kind} receipt uploaded to the private folder', path)
             await view('tx'); await click(f'#app .tx:has-text("{title}")'); await pg.wait_for_selector('#rcView'); await click('#rcView')

@@ -37,7 +37,8 @@ function errMsg(e) {
   if (/Failed to fetch|NetworkError|network/i.test(m)) return 'אין חיבור לאינטרנט. נסה שוב';
   if (/mime|file type/i.test(m)) return 'סוג הקובץ לא נתמך (תמונה או PDF בלבד)';
   if (/size|too large|exceeded/i.test(m)) return 'הקובץ גדול מדי (עד 15MB)';
-  if (e?.code === 'TIMEOUT' || /TIMEOUT/.test(m)) return 'השרת לא ענה בזמן. בדוק את החיבור ונסה שוב';
+  if (e?.code === 'FILE_TOO_BIG') return 'הקובץ גדול מדי (עד 25MB)';
+  if (e?.code === 'OFFLINE' || e?.code === 'TIMEOUT' || /TIMEOUT|Failed to fetch|Load failed|NetworkError/.test(m)) return 'אין חיבור לשרת כרגע. השינויים נשמרים במכשיר ויישלחו אוטומטית';
   if (e?.code === 'SESSION_EXPIRED' || /JWT|token is expired|refresh token/i.test(m)) return 'פג תוקף ההתחברות. צא והתחבר מחדש';
   if (e?.code === 'NOT_FOUND') return 'התנועה כבר לא קיימת (אולי נמחקה ממכשיר אחר). מרענן…';
   if (e?.code === '42501' || /row-level security|permission denied/i.test(m)) return 'אין הרשאה לשנות את הפריט הזה';
@@ -63,6 +64,9 @@ const VIEWS = [['overview', 'סקירה', 'home'], ['tx', 'תנועות', 'list'
 async function boot() {
   try { S.user = await S.store.init(); }
   catch (e) { $('#app').innerHTML = `<div class="auth"><div class="card"><h1>שגיאת התחברות</h1><div class="msg err">${esc(errMsg(e))}</div><button class="btn gold block" style="margin-top:14px" onclick="location.reload()">נסה שוב</button></div></div>`; return; }
+  S.store.warm();
+  S.store.onStatus(onSyncStatus);
+  S.store.onFailed((e) => { toast('שינוי אחד לא נשמר בענן: ' + errMsg(e) + '. הנתונים עודכנו מהשרת', 6000); refresh(false, true); });
   S.store.onAuth((ev, user) => {
     if (ev === 'PASSWORD_RECOVERY') { S.user = user; afterLogin().then(() => openSettings(true)); return; }
     if (ev === 'SIGNED_OUT') { S.user = null; renderAuth(); }
@@ -75,6 +79,7 @@ async function boot() {
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (!hadSW || reloaded) return; const go = () => { if ($('.overlay')) return setTimeout(go, 3000); reloaded = true; location.reload(); }; go(); });
   }
   $('#btnSettings').onclick = () => S.user ? openSettings() : null;
+  $('#sync').onclick = () => { const st = S.store.status || {}; if (st.state === 'auth') return renderAuth('login'); if (st.pending) { toast('מנסה לשלוח שוב…'); S.store.syncNow(); } else if (S.store.mode === 'cloud') refresh(false, true); };
   $('#fab').onclick = () => openTxForm();
   if (!S.user) return renderAuth();
   await afterLogin();
@@ -93,8 +98,8 @@ async function afterLogin() {
   render();
 }
 async function loadAll() {
-  const [cats, txs, recurring, settings] = await Promise.all([S.store.listCategories(), S.store.listTransactions(), S.store.listRecurring(), S.store.getSettings()]);
-  Object.assign(S, { cats, txs, recurring, settings });
+  const { cats, txs, recurring, settings } = await S.store.loadAll();
+  Object.assign(S, { cats, txs, recurring, settings }); setSync();
 }
 let lastRefresh = 0;
 async function refresh(quiet, force) {
@@ -106,11 +111,29 @@ async function runRecurring() {
   const due = M.dueRecurring(S.recurring, S.txs);
   if (!due.length) return;
   const added = await S.store.insertGenerated(due.map(t => ({ ...t, id: uuid() })));
-  if (added.length) { S.txs = await S.store.listTransactions(); toast(`נוספו ${added.length} חיובים/הכנסות קבועים אוטומטית`); }
+  if (added.length) { S.txs = [...added, ...S.txs].sort((a, b) => b.date.localeCompare(a.date)); toast(`נוספו ${added.length} חיובים/הכנסות קבועים אוטומטית`); }
 }
+// Sync status chip + "saving / waiting" badges on rows that are not in the cloud yet
+let lastPending = 0;
 function setSync() {
-  const el = $('#sync'); el.dataset.s = S.store.mode === 'cloud' ? (navigator.onLine ? 'cloud' : 'off') : 'local';
-  $('#syncTxt').textContent = S.store.mode === 'cloud' ? (navigator.onLine ? 'מסונכרן' : 'לא מחובר') : 'תצוגה מקדימה';
+  const el = $('#sync'); if (!el) return;
+  const st = S.store.status || {};
+  if (S.store.mode !== 'cloud') { el.dataset.s = 'local'; $('#syncTxt').textContent = 'תצוגה מקדימה'; return; }
+  const off = st.state === 'offline' || st.offline || !navigator.onLine;
+  let s = 'cloud', txt = 'הכל שמור בענן';
+  if (st.state === 'auth') { s = 'off'; txt = 'צריך להתחבר מחדש'; }
+  else if (st.upload && st.state === 'syncing') { s = 'busy'; txt = `מעלה קבלה ${st.upload.pct || 0}%`; }
+  else if (off) { s = 'off'; txt = st.pending ? `לא מקוון · ${st.changes} ממתינים` : 'לא מקוון'; }
+  else if (st.pending) { s = 'busy'; txt = `שומר… (${st.changes})`; }
+  el.dataset.s = s; $('#syncTxt').textContent = txt;
+  el.title = s === 'off' && st.pending ? 'השינויים שמורים במכשיר ויישלחו לענן אוטומטית כשהחיבור יחזור. לחץ כדי לנסות עכשיו' : '';
+  document.body.dataset.net = off ? 'off' : 'on';
+}
+function onSyncStatus(st) {
+  setSync();
+  $$('[data-tx]').forEach(b => b.classList.toggle('pending', !!S.store.isPending(b.dataset.tx)));
+  if (lastPending && !st.pending && st.state === 'idle') setTimeout(() => { if (!$('.overlay')) refresh(true, true); }, 400); // queue drained: pull the server's view
+  lastPending = st.pending;
 }
 addEventListener('online', setSync); addEventListener('offline', setSync);
 
@@ -265,10 +288,10 @@ function viewTx() {
 }
 function txRow(t) {
   const c = cat(t.category_id);
-  return `<button class="tx ${t.planned ? 'planned' : ''}" data-tx="${t.id}">
+  return `<button class="tx ${t.planned ? 'planned' : ''} ${!t.planned && S.store.isPending(t.id) ? 'pending' : ''}" data-tx="${t.id}">
     <span class="cat-ic" style="background:${c ? c.color : '#6f6a62'}22;color:${c ? c.color : '#a39c90'}">${esc(c ? c.icon : '•')}</span>
     <span class="mid"><span class="t1">${esc(t.title || c?.name || KIND[t.kind])}</span>
-      <span class="t2">${t.planned ? '<span class="badge warn">צפוי</span>' : ''}${c ? esc(c.name) : ''}${t.scope === 'business' ? ' <span class="badge biz">עסקי</span>' : ''}${t.recurring_id && !t.planned ? ` <span class="badge rec">${ic('repeat')}חוזר</span>` : ''}${t.receipt_path ? `<span class="rc">${ic('receipt').replace('class="i"', 'class="i" style="width:14px;height:14px"')}</span>` : ''}</span></span>
+      <span class="t2">${t.planned ? '<span class="badge warn">צפוי</span>' : ''}${c ? esc(c.name) : ''}${t.scope === 'business' ? ' <span class="badge biz">עסקי</span>' : ''}${t.recurring_id && !t.planned ? ` <span class="badge rec">${ic('repeat')}חוזר</span>` : ''}<span class="pend-b"><span class="p-on">שומר…</span><span class="p-off">ממתין לחיבור</span></span>${t.receipt_path ? `<span class="rc">${ic('receipt').replace('class="i"', 'class="i" style="width:14px;height:14px"')}</span>` : ''}</span></span>
     <span class="amt num ${t.kind === 'income' ? 'in' : ''}">${t.kind === 'income' ? '+' : '-'}${fmt(t.amount)}</span><span class="edit-hint" aria-hidden="true">${ic('edit')}</span></button>`;
 }
 
@@ -452,7 +475,7 @@ function openTxForm(t = null) {
       if (!wantRec && linked) await stopRule(linked, t.date, t.id);
       if (oldPath && oldPath !== saved.receipt_path) S.store.deleteReceipt(oldPath).catch(() => {});
       S.txs = [saved, ...S.txs.filter(x => x.id !== saved.id)].sort((a, b) => b.date.localeCompare(a.date));
-      closeSheet(); toast(isNew ? 'נוסף ✓' : 'נשמר ✓');
+      closeSheet(); toast(savedToast(isNew ? 'נוסף ✓' : 'נשמר ✓'));
       if (wantRec) await runRecurring().catch(e => toast(errMsg(e), 5000));
       render();
     } catch (e) {
@@ -475,7 +498,7 @@ function openTxForm(t = null) {
       }
       await S.store.deleteTransaction({ ...t, date: origDate });
       if (linked && k === 'stop') await stopRule(linked, origDate, t.id);
-      S.txs = S.txs.filter(x => x.id !== t.id); closeSheet(); toast('נמחק ✓'); render();
+      S.txs = S.txs.filter(x => x.id !== t.id); closeSheet(); toast(savedToast('נמחק ✓')); render();
     } catch (e) {
       btn.disabled = false; toast(errMsg(e), 5000);
       if (e?.code === 'NOT_FOUND') { S.txs = S.txs.filter(x => x.id !== t.id); closeSheet(); render(); }
@@ -483,6 +506,7 @@ function openTxForm(t = null) {
   };
 }
 
+const savedToast = ok => (S.store.mode === 'cloud' && (S.store.status?.offline || S.store.status?.state === 'offline' || !navigator.onLine)) ? ok.replace(' ✓', '') + ' במכשיר · יישלח לענן כשהחיבור יחזור' : ok;
 /** Stop a recurring rule from the month of `date` onward. Deletes the rule if nothing else uses it. */
 async function stopRule(rule, date, exceptTxId) {
   const others = S.txs.filter(x => x.recurring_id === rule.id && x.id !== exceptTxId);
@@ -542,7 +566,7 @@ function openSettings(recovery = false) {
       <button class="btn sm" id="sCeilBtn">שמירה</button></div>
     <div class="card"><h3>${ic('tag')} קטגוריות</h3><p class="small muted">הוספה, שינוי שם, צבע ואייקון.</p><button class="btn sm" id="sCats" style="margin-top:8px">ניהול קטגוריות</button></div>`);
   if (cloud) {
-    $('#sOut').onclick = async () => { await S.store.signOut(); S.loaded = false; closeSheet(); location.reload(); };
+    $('#sOut').onclick = async () => { const n = S.store.status?.pending || 0; if (n && await ask('יש ' + n + ' שינויים שעוד לא נשמרו בענן', 'התנתקות עכשיו תמחק אותם מהמכשיר. כדאי לחכות שהחיבור יחזור.', [{ k: 'out', label: 'להתנתק בכל זאת', cls: 'danger' }]) !== 'out') return; await S.store.signOut(); S.loaded = false; closeSheet(); location.reload(); };
     $('#sPassBtn').onclick = async () => { const p = $('#sPass').value; if (p.length < 8) return toast('לפחות 8 תווים'); try { await S.store.setPassword(p); $('#sPass').value = ''; toast('הסיסמה עודכנה ✓'); } catch (e) { toast(errMsg(e)); } };
   } else {
     $('#sDemo').onclick = async () => { if (S.txs.length && await ask('להוסיף נתוני דוגמה?', 'הם יתווספו לנתונים הקיימים.') !== 'ok') return; await loadSample(); closeSheet(); render(); toast('נטענו נתוני דוגמה'); };
