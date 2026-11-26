@@ -2,8 +2,8 @@
 // receipts bucket are protected by Row Level Security. NEVER put a service key here.
 // Leave supabaseUrl empty to run in local preview mode (data stays in this browser only).
 export const CONFIG = {
-  supabaseUrl: '',
-  supabaseAnonKey: '',
+  supabaseUrl: 'https://ukvhmvsbxvweeicwulmf.supabase.co',
+  supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVrdmhtdnNieHZ3ZWVpY3d1bG1mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU2ODA1MTUsImV4cCI6MjExMTI1NjUxNX0.09-83Ty8u6u5EkHsSnI69m623zz7BFoSiobyNzaoyOw',
   receiptsBucket: 'budget-receipts',
   ownerEmail: 'studioimage1983@gmail.com',
   supabaseJs: 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js',

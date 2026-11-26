@@ -44,9 +44,12 @@ python3 tests/ui_preview.py      # screenshots to /workspace/budget-app-preview
 ```
 
 ## Deployment status
-- Target: dedicated Supabase project **budget-app** (Frankfurt), open sign-up with email confirmation. Provision with
-  `node scripts/provision.mjs --ref <ref>` (add `--private` for a single-owner lock via `supabase/signup_allowlist.sql`).
-- Until then `js/config.js` is empty and the app runs in local preview mode.
+- Supabase project **budget-app** `ukvhmvsbxvweeicwulmf` (region ap-northeast-1, Tokyo), provisioned with
+  `node scripts/provision.mjs --ref ukvhmvsbxvweeicwulmf` (add `--private` for a single-owner lock via `supabase/signup_allowlist.sql`).
+- Open sign-up with email confirmation; every user isolated by RLS and a per-user storage folder.
+- `js/config.js` holds only the project URL and the anon (public) key.
+- Owner user `studioimage1983@gmail.com` exists and is confirmed. First sign-in: magic link or "forgot password".
+- Custom SMTP (Gmail, smtp.gmail.com:465, sender "ניהול תקציב") plus Hebrew RTL templates from `supabase/email/`,
+  applied by `node scripts/smtp.mjs --ref <ref>` (needs `GMAIL_APP_PASSWORD` in env). See `docs/email-smtp-he.md`.
 - Everything budget-related was removed from the photo-guides project (`aqsdvzesnqtmnlkyrkeo`).
-- Public users need custom SMTP: see `docs/email-smtp-he.md`.
 - Not published: GitHub Pages is off, repo is private.
