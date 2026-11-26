@@ -1,5 +1,5 @@
 // Exports for the accountant: CSV (Excel-friendly, UTF-8 BOM), real .xlsx (SheetJS, lazy-loaded),
-// ZIP of receipts (JSZip, lazy-loaded) and a printable A4 report (browser "Save as PDF").
+// ZIP of receipts (JSZip, lazy-loaded). The designed PDF report lives in report.js + pdf.js.
 import { byCategory, round2 } from './model.js';
 const XLSX_URL = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
 const JSZIP_URL = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
@@ -48,29 +48,3 @@ export async function exportReceiptsZip(list, store, name, onProgress) {
   for (const t of withRc) { zip.file(receiptFileName(t), await store.receiptBlob(t.receipt_path)); onProgress?.(++i, withRc.length); }
   download(await zip.generateAsync({ type: 'blob' }), name + '-קבלות.zip');
 }
-
-export async function printReport({ list, cats, title, period, fmt, store, includeReceipts, owner }) {
-  const area = document.getElementById('printArea');
-  const sum = k => round2(list.filter(t => t.kind === k).reduce((a, t) => a + +t.amount, 0));
-  const biz = list.filter(t => t.scope === 'business'), bizIn = round2(biz.filter(t => t.kind === 'income').reduce((a, t) => a + +t.amount, 0)), bizOut = round2(biz.filter(t => t.kind === 'expense').reduce((a, t) => a + +t.amount, 0));
-  const catTable = kind => { const c = byCategory(list, cats, kind); return c.length ? `<table><tr><th>קטגוריה</th><th>תנועות</th><th class="n">סה"כ</th></tr>${c.map(x => `<tr><td>${esc(x.name)}</td><td>${x.count}</td><td class="n">${esc(fmt(x.total))}</td></tr>`).join('')}</table>` : '<p class="muted">אין</p>'; };
-  const sorted = [...list].sort((a, b) => a.date.localeCompare(b.date));
-  let receipts = '';
-  if (includeReceipts) {
-    for (const t of sorted.filter(t => t.receipt_path)) {
-      const isImg = (t.receipt_type || '').startsWith('image/');
-      let src = ''; try { src = isImg ? await blobToDataURL(await store.receiptBlob(t.receipt_path)) : ''; } catch { }
-      receipts += `<div class="rc"><b>${esc(t.date)} · ${esc(t.title || '')} · ${esc(fmt(t.amount))}</b><br>${isImg && src ? `<img src="${src}">` : `<span class="muted">קובץ PDF: ${esc(receiptFileName(t))} (מצורף בקובץ ה-ZIP)</span>`}</div>`;
-    }
-  }
-  area.innerHTML = `<h1>${esc(title)}</h1><div class="muted">${esc(period)} · ${esc(owner || '')} · הופק ${new Date().toLocaleDateString('he-IL')}</div>
-    <h2>סיכום</h2><div class="kpis"><div class="kpi">הכנסות<b>${fmt(sum('income'))}</b></div><div class="kpi">הוצאות<b>${fmt(sum('expense'))}</b></div><div class="kpi">מאזן<b>${fmt(sum('income') - sum('expense'))}</b></div></div>
-    <div class="kpis" style="margin-top:3mm"><div class="kpi">הכנסות עסקיות (מחזור)<b>${fmt(bizIn)}</b></div><div class="kpi">הוצאות עסקיות<b>${fmt(bizOut)}</b></div><div class="kpi">רווח עסקי<b>${fmt(bizIn - bizOut)}</b></div></div>
-    <h2>הכנסות לפי קטגוריה</h2>${catTable('income')}<h2>הוצאות לפי קטגוריה</h2>${catTable('expense')}
-    <h2>פירוט תנועות (${sorted.length})</h2><table><tr><th>תאריך</th><th>סוג</th><th>תיאור</th><th>קטגוריה</th><th>עסקי/פרטי</th><th>תשלום</th><th>קבלה</th><th class="n">סכום</th></tr>
-    ${sorted.map(t => `<tr><td>${t.date}</td><td>${KIND[t.kind]}</td><td>${esc(t.title || '')}${t.notes ? `<br><span class="muted">${esc(t.notes)}</span>` : ''}</td><td>${esc(cats.find(c => c.id === t.category_id)?.name || '')}</td><td>${SCOPE[t.scope]}</td><td>${esc(t.payment_method || '')}</td><td>${t.receipt_path ? '✓' : ''}</td><td class="n">${t.kind === 'expense' ? '-' : ''}${esc(fmt(t.amount))}</td></tr>`).join('')}</table>
-    ${receipts ? `<h2 class="pb">נספח: קבלות</h2>${receipts}` : ''}`;
-  await Promise.all([...area.querySelectorAll('img')].map(i => i.complete ? 0 : new Promise(r => { i.onload = i.onerror = r; })));
-  window.print();
-}
-const blobToDataURL = b => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b); });

@@ -3,7 +3,9 @@ import { createStore, uuid } from './store.js';
 import * as M from './model.js';
 import { donut, trendChart } from './charts.js';
 import { ruleTips, aiTips, aggregatesForAI, checkKey } from './tips.js';
-import { exportCSV, exportXLSX, exportReceiptsZip, printReport } from './export.js';
+import { exportCSV, exportXLSX, exportReceiptsZip } from './export.js';
+import { buildReport, describe as describeReport, receiptToSrc } from './report.js';
+import { renderPages, imagesToPdf, deliverPdf, isStandalone, isIOS, isMobile } from './pdf.js';
 import { DEFAULT_CATEGORIES, sampleData } from './defaults.js';
 
 // ---------------------------------------------------------------- helpers
@@ -375,11 +377,12 @@ function viewReports() {
         <option value="month">${monthName(S.month)}</option><option value="bimonth">חודשיים (${monthName(M.addMonths(S.month, -1))} – ${monthShort(S.month)})</option><option value="year" selected>שנת ${y}</option><option value="all">כל הנתונים</option></select></div>
         <div class="field"><label>אילו תנועות</label><select class="inp" id="rpScope"><option value="business" selected>עסקי בלבד</option><option value="all">עסקי + פרטי</option><option value="personal">פרטי בלבד</option></select></div></div>
       <div class="report-btns">
-        <button class="report-btn" data-rp="pdf"><span class="cat-ic">${ic('print')}</span><span><b>דוח PDF להדפסה</b><span>סיכום, קטגוריות, כל התנועות ונספח קבלות. בוחרים "שמור כ-PDF"</span></span></button>
+        <button class="report-btn" data-rp="pdf"><span class="cat-ic">${ic('print')}</span><span><b>דוח PDF מעוצב</b><span>תצוגה, הורדה ושיתוף: סיכום, גרפים, קטגוריות, כל התנועות ונספח קבלות</span></span></button>
         <button class="report-btn" data-rp="xlsx"><span class="cat-ic">${ic('sheet')}</span><span><b>קובץ Excel</b><span>גיליון תנועות + גיליון סיכום לפי קטגוריה</span></span></button>
         <button class="report-btn" data-rp="csv"><span class="cat-ic">${ic('download')}</span><span><b>קובץ CSV</b><span>נפתח בכל תוכנה, כולל Excel ו-Google Sheets</span></span></button>
         <button class="report-btn" data-rp="zip"><span class="cat-ic">${ic('zip')}</span><span><b>כל הקבלות בקובץ ZIP</b><span>שמות קבצים מסודרים לפי תאריך, סכום ותיאור</span></span></button>
-      </div><div id="rpMsg" class="small muted" style="margin-top:10px"></div>
+      </div><label class="check small" style="margin-top:12px"><input type="checkbox" id="rpRc" checked> לצרף לדוח ה-PDF את תמונות הקבלות (נספח)</label>
+      <div id="rpMsg" class="small muted" style="margin-top:10px"></div>
     </div>
     ${turnoverCard(M.turnover(S.txs, +y, +S.settings.turnoverCeiling || CONFIG.turnover.ceiling2026))}
     <div class="card"><h3>${ic('chart')} סיכום שנתי ${y}</h3>${yearTable(y)}</div>
@@ -400,7 +403,7 @@ function reportSelection() {
   list = M.filterTx(list, { from, to, scope: sc }, S.cats);
   const scopeLbl = { business: 'עסקי', personal: 'פרטי', all: 'עסקי ופרטי' }[sc];
   const name = `דוח-${scopeLbl}-${p === 'year' ? y : p === 'all' ? 'הכל' : S.month}`.replace(/\s+/g, '-');
-  return { list, period: `${period} · ${scopeLbl}`, name };
+  return { list, period: `${period} · ${scopeLbl}`, name, periodKey: p, scope: sc };
 }
 
 // ---------------------------------------------------------------- tx form
@@ -564,6 +567,8 @@ function openSettings(recovery = false) {
       <div class="field"><label>תקרת מחזור שנתית (₪)</label><input class="inp" id="sCeil" inputmode="numeric" value="${S.settings.turnoverCeiling || CONFIG.turnover.ceiling2026}"></div>
       <p class="src">ברירת המחדל ל-2026: ${fmtR(CONFIG.turnover.ceiling2026)}, לפי <a href="${CONFIG.turnover.sourceUrl}" target="_blank" rel="noopener">${esc(CONFIG.turnover.sourceLabel)}</a>. הסכום מתעדכן בינואר בכל שנה, אז כדאי לעדכן כאן כשמתפרסם הסכום ל-2027.</p>
       <button class="btn sm" id="sCeilBtn">שמירה</button></div>
+    <div class="card" style="margin-bottom:12px"><h3>${ic('doc')} פרטי העסק בדוחות</h3>
+      <div class="field"><label>שם העסק (מופיע בכותרת דוחות ה-PDF)</label><div style="display:flex;gap:8px"><input class="inp" id="sBiz" maxlength="60" value="${esc(S.settings.businessName || 'Studio Image')}"><button class="btn" id="sBizBtn">שמירה</button></div></div></div>
     <div class="card"><h3>${ic('tag')} קטגוריות</h3><p class="small muted">הוספה, שינוי שם, צבע ואייקון.</p><button class="btn sm" id="sCats" style="margin-top:8px">ניהול קטגוריות</button></div>`);
   if (cloud) {
     $('#sOut').onclick = async () => { const n = S.store.status?.pending || 0; if (n && await ask('יש ' + n + ' שינויים שעוד לא נשמרו בענן', 'התנתקות עכשיו תמחק אותם מהמכשיר. כדאי לחכות שהחיבור יחזור.', [{ k: 'out', label: 'להתנתק בכל זאת', cls: 'danger' }]) !== 'out') return; await S.store.signOut(); S.loaded = false; closeSheet(); location.reload(); };
@@ -580,6 +585,7 @@ function openSettings(recovery = false) {
     catch { localStorage.setItem(GKEY, k); m.innerHTML = '<div class="msg ok">נשמר (לא הצלחתי לבדוק כרגע, אין חיבור)</div>'; }
   };
   $('#sCeilBtn').onclick = async () => { const v = +$('#sCeil').value.replace(/[^\d.]/g, ''); if (!(v > 0)) return toast('סכום לא תקין'); S.settings = { ...S.settings, turnoverCeiling: v }; try { await S.store.saveSettings(S.settings); toast('נשמר ✓'); render(); } catch (e) { toast(errMsg(e)); } };
+  $('#sBizBtn').onclick = async () => { const v = $('#sBiz').value.trim().slice(0, 60) || 'Studio Image'; S.settings = { ...S.settings, businessName: v }; try { await S.store.saveSettings(S.settings); toast('נשמר ✓'); } catch (e) { toast(errMsg(e)); } };
   $('#sCats').onclick = () => openCategories();
 }
 const PALETTE = ['#d4af6a', '#5fd39a', '#7aa7ff', '#ff8a91', '#f1b649', '#c38bff', '#4fd1d9', '#ff9f5a', '#9be7c0', '#e9a3c9', '#a3b6c9', '#b08d57'];
@@ -667,10 +673,60 @@ function bindView() {
       if (k === 'csv') exportCSV(list, S.cats, name);
       if (k === 'xlsx') await exportXLSX(list, S.cats, name);
       if (k === 'zip') await exportReceiptsZip(list, S.store, name, (i, n) => msg.textContent = `מוריד קבלות ${i}/${n}…`);
-      if (k === 'pdf') await printReport({ list, cats: S.cats, title: 'דוח הכנסות והוצאות – Studio Image', period, fmt, store: S.store, includeReceipts: list.some(t => t.receipt_path), owner: S.store.mode === 'cloud' ? S.user.email : '' });
+      if (k === 'pdf') { msg.textContent = ''; return openReportViewer(reportSelection(), name); }
       msg.textContent = `מוכן ✓ (${list.length} תנועות)`;
     } catch (e) { msg.textContent = errMsg(e); }
   });
+}
+
+// ---------------------------------------------------------------- report viewer (PDF)
+// Pages are drawn by the app itself (js/report.js) and turned into a real PDF file (js/pdf.js): no print dialog,
+// so it behaves the same on a Mac, an iPhone, Android and the installed home-screen app.
+async function openReportViewer(sel, name) {
+  closeSheet();
+  const withRc = sel.list.some(t => t.receipt_path), inclRc = withRc && $('#rpRc')?.checked !== false;
+  const info = describeReport({ periodKey: sel.periodKey, month: S.month, scope: sel.scope, list: sel.list });
+  const ov = document.createElement('div'); ov.className = 'overlay rv';
+  ov.innerHTML = `<div class="rv-box" role="dialog" aria-modal="true"><div class="rv-bar"><button class="icon-btn" data-close aria-label="סגירה">${ic('x')}</button>
+    <div class="rv-t"><b>${esc(info.title)} · ${esc(info.period)}</b><span id="rvSt" aria-live="polite">מכין את הדוח…</span></div>
+    <div class="rv-act"><button class="btn gold" id="rvDl" disabled>${ic('download')} <span>הורדת PDF</span></button><button class="btn" id="rvOpen" hidden>${ic('doc')} פתיחה</button><button class="btn" id="rvPrint" hidden>${ic('print')} הדפסה</button></div></div>
+    <div class="rv-pages" id="rvPages"><div class="rv-load"><span class="spin"></span></div></div></div>`;
+  const build = document.createElement('div'); build.id = 'rpBuild'; build.setAttribute('aria-hidden', 'true');
+  let urls = [], pdfUrl = null;
+  ov.addEventListener('click', e => { if (e.target === ov || e.target.closest('[data-close]')) ov.remove(); });
+  $('#host').appendChild(ov); document.body.appendChild(build); document.body.style.overflow = 'hidden';
+  const mo = new MutationObserver(() => { if (!ov.isConnected) { mo.disconnect(); build.remove(); urls.forEach(u => URL.revokeObjectURL(u)); if (pdfUrl) URL.revokeObjectURL(pdfUrl); $('#printArea').innerHTML = ''; if (!$('.overlay')) document.body.style.overflow = ''; } });
+  mo.observe($('#host'), { childList: true });
+  const st = t => { const el = $('#rvSt', ov); if (el) el.textContent = t; };
+  try {
+    // receipts: fetch + shrink (only when they are going into the appendix)
+    const receipts = new Map();
+    if (inclRc) { const l = sel.list.filter(t => t.receipt_path); let i = 0; for (const t of l) { st(`טוען קבלות ${++i}/${l.length}…`); try { receipts.set(t.id, await receiptToSrc(await S.store.receiptBlob(t.receipt_path))); } catch { receipts.set(t.id, null); } } }
+    // osek patur: calendar-year turnover for the year(s) the report touches (from ALL entries, not just this period)
+    const ceil = +S.settings.turnoverCeiling || CONFIG.turnover.ceiling2026;
+    const years = sel.periodKey === 'all' ? [...new Set(sel.list.map(t => t.date.slice(0, 4)))].sort() : [S.month.slice(0, 4)];
+    const turnovers = sel.scope === 'personal' ? [] : years.map(y => M.turnover(S.txs, +y, ceil)).filter(t => t.ytd > 0);
+    st('מעצב את העמודים…');
+    if (document.fonts?.load) await Promise.all(['400 14px Heebo', '600 14px Heebo', '700 14px Heebo', '800 14px Heebo'].map(f => document.fonts.load(f, 'אבג abc 123').catch(() => {})));
+    await document.fonts?.ready;
+    const pages = await buildReport({ host: build, list: sel.list, cats: S.cats, fmt, business: S.settings.businessName || 'Studio Image', owner: S.store.mode === 'cloud' ? S.user.email : '', info, turnovers, receipts, includeReceipts: inclRc });
+    const box = $('#rvPages', ov); box.innerHTML = '';
+    const imgs = await renderPages(pages, { scale: isMobile() ? 1.8 : 2, onPage: (pg, i, n) => { urls.push(pg.url); st(`מצייר עמוד ${i + 1} מתוך ${n}…`); const im = new Image(); im.src = pg.url; im.alt = `עמוד ${i + 1} מתוך ${n}`; im.className = 'rv-pg'; box.appendChild(im); } });
+    build.remove();
+    st('יוצר קובץ PDF…');
+    const blob = await imagesToPdf(imgs, { title: `${info.title} ${info.period}` });
+    pdfUrl = URL.createObjectURL(blob);
+    S.lastReport = { pages: imgs.length, bytes: blob.size, name };
+    st(`מוכן ✓ · ${imgs.length === 1 ? 'עמוד אחד' : imgs.length + ' עמודים'} · ${(blob.size / 1048576).toFixed(1)}MB`);
+    const dl = $('#rvDl', ov); dl.disabled = false;
+    dl.onclick = async () => { const r = await deliverPdf(blob, name); if (r === 'shared') toast('נשלח ✓'); else if (r === 'downloaded') toast(isIOS() ? 'הקובץ נשמר. אפשר למצוא אותו בהורדות / בקבצים' : 'ה-PDF ירד למחשב'); };
+    if (!isStandalone()) { const op = $('#rvOpen', ov); op.hidden = false; op.onclick = () => { if (!window.open(pdfUrl, '_blank', 'noopener')) toast('הדפדפן חסם את החלון. השתמש בהורדה'); }; }
+    if (!isMobile()) { const pr = $('#rvPrint', ov); pr.hidden = false; pr.onclick = () => { $('#printArea').innerHTML = imgs.map(p => `<img class="pp" src="${p.url}" alt="">`).join(''); setTimeout(() => window.print(), 50); }; }
+  } catch (e) {
+    console.error('report', e); build.remove();
+    $('#rvPages', ov).innerHTML = `<div class="rv-err"><b>לא הצלחנו להכין את הדוח</b><span>${esc(errMsg(e))}</span><button class="btn gold" id="rvRetry">נסה שוב</button></div>`;
+    st('שגיאה'); $('#rvRetry', ov).onclick = () => { ov.remove(); setTimeout(() => openReportViewer(reportSelection(), name), 50); };
+  }
 }
 
 boot();

@@ -270,24 +270,13 @@ section.view{animation:fade .25s}
 /* print report */
 #printArea{display:none}
 @media print{
-  @page{size:A4;margin:14mm}
-  body{background:#fff!important;color:#111;padding:0}
+  @page{size:A4;margin:0}
+  html,body{background:#fff!important;padding:0!important;margin:0!important}
   body::before,body::after{display:none}
   body>*:not(#printArea){display:none!important}
-  #printArea{display:block!important;font-family:Heebo,Arial,sans-serif;color:#111;direction:rtl}
-  #printArea h1{font-size:20pt;margin-bottom:2mm}
-  #printArea h2{font-size:13pt;margin:7mm 0 3mm;border-bottom:1.5pt solid #a67c3d;padding-bottom:1mm}
-  #printArea table{width:100%;border-collapse:collapse;font-size:9pt}
-  #printArea th,#printArea td{border-bottom:.5pt solid #ccc;padding:1.6mm 1.5mm;text-align:right;vertical-align:top}
-  #printArea th{background:#f3ead7}
-  #printArea .n{direction:ltr;text-align:left;white-space:nowrap}
-  #printArea .kpis{display:flex;gap:4mm}
-  #printArea .kpi{flex:1;border:.6pt solid #ccc;border-radius:2mm;padding:3mm}
-  #printArea .kpi b{display:block;font-size:14pt}
-  #printArea .rc{page-break-inside:avoid;margin-bottom:5mm}
-  #printArea .rc img{max-width:100%;max-height:230mm;border:.5pt solid #ccc}
-  #printArea .pb{page-break-before:always}
-  #printArea .muted{color:#666}
+  #printArea{display:block!important}
+  #printArea .pp{display:block;width:210mm;height:297mm;page-break-after:always;break-after:page}
+  #printArea .pp:last-child{page-break-after:auto;break-after:auto}
 }
 
 /* ---- v2: recurring toggle, recurring badge, edit hint, in-app confirm ---- */

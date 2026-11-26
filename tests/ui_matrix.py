@@ -1,6 +1,6 @@
 # Cross-platform matrix against the LIVE site + real cloud (throw-away test user only).
 # Covers: login/sign-up screens, Hebrew auth errors, RTL + no horizontal overflow on every screen and sheet,
-# receipt upload (photo + PDF) and viewing via signed URL, CSV/XLSX/ZIP/PDF exports, service worker active (budget-v3), upload progress + sync status.
+# receipt upload (photo + PDF) and viewing via signed URL, CSV/XLSX/ZIP/PDF exports, service worker active (budget-v4), upload progress + sync status.
 # Sign-up submit is answered by a mocked /auth/v1/signup so no real e-mail is sent to fake addresses.
 # env: PLATFORM (chrome|firefox|webkit|iphone|android), BASE, BUDGET_TEST_EMAIL, BUDGET_TEST_PASSWORD, SHOTS (optional dir)
 import asyncio, os, sys, json, pathlib, zipfile, io
@@ -40,7 +40,7 @@ async def main():
 
         # ---- auth screens
         await pg.goto(BASE); await pg.wait_for_selector('#loginF', timeout=30000); await pg.wait_for_timeout(600)
-        check(await pg.evaluate("document.querySelector('meta[name=app-version]').content") == '3', 'live serves version 3')
+        check(await pg.evaluate("document.querySelector('meta[name=app-version]').content") == '4', 'serves version 4')
         await no_overflow('login')
         await pg.fill('#lEmail', EMAIL); await pg.fill('#lPass', 'wrong-password-1'); await click('#lBtn')
         await pg.wait_for_selector('#lMsg .msg', timeout=20000)
@@ -67,7 +67,7 @@ async def main():
 
         # ---- service worker controls the page and uses the v2 cache
         sw = await pg.evaluate("""(async()=>{ if(!('serviceWorker' in navigator)) return 'unsupported'; const r = await navigator.serviceWorker.ready; await new Promise(r=>setTimeout(r,1500)); const keys = await caches.keys(); return { active: !!r.active, controlled: !!navigator.serviceWorker.controller, keys }; })()""")
-        check(sw != 'unsupported' and sw['active'] and sw['keys'] == ['budget-v3'], 'service worker active with cache budget-v3 only', sw)
+        check(sw != 'unsupported' and sw['active'] and sw['keys'] == ['budget-v4'], 'service worker active with cache budget-v4 only', sw)
 
         # ---- every screen: RTL and no overflow
         await no_overflow('overview')
@@ -117,11 +117,13 @@ async def main():
             if k == 'zip': good = good and len(zipfile.ZipFile(fp).namelist()) >= 2
             if k == 'csv': good = good and 'קבלה-צילום' in open(fp, encoding='utf-8-sig').read()
             check(good, f'export {k.upper()} downloads', f'{d.suggested_filename} {size}')
-        await pg.evaluate("window.print = () => { window.__printed = true }")
-        await click('[data-rp="pdf"]'); await pg.wait_for_function("window.__printed === true", timeout=60000)
-        await pg.wait_for_function("document.querySelector('#rpMsg').textContent.includes('מוכן')", timeout=20000)
-        rows = await pg.evaluate("document.querySelectorAll('#printArea tr, .print-area tr, [id*=print] tr').length")
-        check(rows > 5, 'PDF report prepared (print dialog) with transaction table', rows)
+        # PDF report: real viewer + real download (no window.print stub); full variant coverage lives in tests/ui_pdf.py
+        await click('[data-rp="pdf"]'); await pg.wait_for_selector('#rvDl:not([disabled])', timeout=120000)
+        async with pg.expect_download(timeout=30000) as dl: await click('#rvDl')
+        d = await dl.value; fp = await d.path(); raw = open(fp, 'rb').read()
+        npg = await pg.evaluate("document.querySelectorAll('#rvPages .rv-pg').length")
+        check(d.suggested_filename.endswith('.pdf') and raw[:5] == b'%PDF-' and raw.count(b'/Type /Page ') == npg >= 1 and len(raw) > 30000, 'PDF report viewer opens and the downloaded file is a valid multi-page PDF', f'{d.suggested_filename} {len(raw)} pages={npg}')
+        await pg.keyboard.press('Escape')
 
         check(not [l for l in log if l.startswith('pageerror') or 'NATIVE' in l], 'no page errors / native dialogs', log)
         await b.close()

@@ -65,7 +65,7 @@ async def main():
         await pg.evaluate("(async()=>{const S=window.__budget, sb=S.store.sb; if(!S.user.email.startsWith('budget-e2e-ui-')) throw new Error('not a test user'); await sb.from('budget_transactions').delete().neq('id','00000000-0000-0000-0000-000000000000'); await sb.from('budget_recurring').delete().neq('id','00000000-0000-0000-0000-000000000000');})()")
         await reload()
         ver = await pg.evaluate("document.querySelector('meta[name=app-version]')?.content")
-        check(ver == '3', 'serves app version 3', ver)
+        check(ver == '4', 'serves app version 4', ver)
 
         # 1) plain expense: edit from the overview "recent" card, then delete
         await add('בדיקה-רגילה', 120, date=today.isoformat())

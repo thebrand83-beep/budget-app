@@ -354,8 +354,8 @@ class LocalStore {
   async deleteTransaction(t) { await this._tx('transactions', 'readwrite', s => s.delete(t.id)); if (t.receipt_path) await this.deleteReceipt(t.receipt_path); }
   async getSettings() { const r = await this._tx('kv', 'readonly', s => s.get('settings')); return r?.v || {}; }
   saveSettings(v) { return this._tx('kv', 'readwrite', s => s.put({ k: 'settings', v })); }
-  async uploadReceipt(txId, file) { const path = `local/${txId}/${Date.now()}_${safeName(file.name)}`; await this._tx('blobs', 'readwrite', s => s.put({ k: path, blob: file })); return { receipt_path: path, receipt_name: file.name || 'receipt', receipt_type: file.type || '' }; }
-  async receiptBlob(path) { const r = await this._tx('blobs', 'readonly', s => s.get(path)); if (!r) throw new Error('הקבלה לא נמצאה'); return r.blob; }
+  async uploadReceipt(txId, file) { const path = `local/${txId}/${Date.now()}_${safeName(file.name)}`; const buf = await file.arrayBuffer(); await this._tx('blobs', 'readwrite', s => s.put({ k: path, buf, type: file.type || 'application/octet-stream' })); /* ArrayBuffer, not Blob: Blob-in-IndexedDB is unreliable in WebKit */ return { receipt_path: path, receipt_name: file.name || 'receipt', receipt_type: file.type || '' }; }
+  async receiptBlob(path) { const r = await this._tx('blobs', 'readonly', s => s.get(path)); if (!r) throw new Error('הקבלה לא נמצאה'); return r.buf ? new Blob([r.buf], { type: r.type }) : r.blob; }
   async receiptUrl(path) { return URL.createObjectURL(await this.receiptBlob(path)); }
   deleteReceipt(path) { return this._tx('blobs', 'readwrite', s => s.delete(path)); }
   async loadAll() { const [cats, txs, recurring, settings] = await Promise.all([this.listCategories(), this.listTransactions(), this.listRecurring(), this.getSettings()]); return { cats, txs, recurring, settings }; }
