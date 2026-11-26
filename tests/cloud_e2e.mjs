@@ -43,10 +43,10 @@ try {
   const up = await a.storage.from('budget-receipts').upload(path, file, { contentType: 'image/jpeg' }); if (up.error) throw up.error; ok('A uploaded receipt to private bucket');
   const ins = await a.from('budget_transactions').insert([
     { id: txId, kind: 'expense', amount: 1290, date: month + '-02', category_id: cat.id, scope: 'business', title: 'עדשה', receipt_path: path, receipt_name: 'receipt.jpg', receipt_type: 'image/jpeg' },
-    { kind: 'income', amount: 7800, date: month + '-03', category_id: catI.id, scope: 'business', title: 'חתונה' },
-    { kind: 'expense', amount: 3200, date: month + '-01', recurring_id: rec.id, scope: 'business', title: 'שכירות' },
+    { id: crypto.randomUUID(), kind: 'income', amount: 7800, date: month + '-03', category_id: catI.id, scope: 'business', title: 'חתונה' },
+    { id: crypto.randomUUID(), kind: 'expense', amount: 3200, date: month + '-01', recurring_id: rec.id, scope: 'business', title: 'שכירות' },
   ]).select(); if (ins.error) throw ins.error;
-  const dup = await a.from('budget_transactions').upsert({ kind: 'expense', amount: 3200, date: month + '-01', recurring_id: rec.id, scope: 'business', title: 'שכירות' }, { onConflict: 'user_id,recurring_id,date', ignoreDuplicates: true }).select();
+  const dup = await a.from('budget_transactions').upsert({ id: crypto.randomUUID(), kind: 'expense', amount: 3200, date: month + '-01', recurring_id: rec.id, scope: 'business', title: 'שכירות' }, { onConflict: 'user_id,recurring_id,date', ignoreDuplicates: true }).select();
   assert.equal(dup.data.length, 0); ok('recurring auto-add is idempotent (unique per date)');
   const { data: mine } = await a.from('budget_transactions').select('*');
   const inc = mine.filter(t => t.kind === 'income').reduce((s, t) => s + +t.amount, 0), exp = mine.filter(t => t.kind === 'expense').reduce((s, t) => s + +t.amount, 0);

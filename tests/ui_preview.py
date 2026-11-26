@@ -33,6 +33,12 @@ async def run_desktop(b):
     pg.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
     pg.on('dialog', lambda d: asyncio.ensure_future(d.accept()))
     await login_or_seed(pg)
+    if EMAIL:  # cloud: seed the same realistic sample data through the app's own store (RLS applies)
+        await pg.evaluate('''async () => { const S = window.__budget; const { sampleData } = await import('./js/defaults.js');
+            const d = sampleData(S.cats, new Date().toISOString().slice(0,10));
+            for (const c of d.cats) await S.store.saveCategory(c); for (const r of d.recurring) await S.store.saveRecurring(r);
+            for (const t of d.txs) await S.store.saveTransaction(t); }''')
+        await pg.reload(); await pg.wait_for_selector('.hero', timeout=30000); await pg.wait_for_timeout(2500)
     if not EMAIL:  # local preview: realistic sample data
         await pg.click('#btnSettings'); await pg.click('#sDemo'); await pg.wait_for_timeout(2500)
     await pg.screenshot(path=str(OUT / '01-desktop-overview.png'), full_page=True)
@@ -99,7 +105,7 @@ async def run_desktop(b):
 
 async def run_mobile(b, state):
     m = await b.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=3, is_mobile=True, has_touch=True, locale='he-IL', storage_state=state, timezone_id='Asia/Jerusalem')
-    pg = await m.new_page(); pg.on('pageerror', lambda e: errors.append('m-pageerror: ' + str(e)))
+    pg = await m.new_page(); pg.on('console', lambda x: errors.append('m-console: ' + x.text) if x.type == 'error' else None); pg.on('pageerror', lambda e: errors.append('m-pageerror: ' + str(e)))
     if EMAIL: await login_or_seed(pg)
     else:  # IndexedDB isn't in storage_state: re-seed the mobile context
         await pg.goto(BASE); await pg.wait_for_timeout(1500); pg.on('dialog', lambda d: asyncio.ensure_future(d.accept()))
@@ -111,7 +117,8 @@ async def run_mobile(b, state):
     await pg.click('#fab'); await pg.wait_for_selector('#fAmt'); await pg.fill('#fAmt', '86.90'); await pg.fill('#fTitle', 'דלק – פז'); await pg.click('#fCats button:has-text("רכב ודלק")')
     await pg.set_input_files('#fCam', str(FX / 'receipt-photo.jpg')); await pg.wait_for_timeout(800)
     await pg.screenshot(path=str(OUT / '23-mobile-add-with-camera-receipt.png'))
-    await pg.click('#fSave'); await pg.wait_for_timeout(2500)
+    await pg.click('#fSave'); await pg.wait_for_timeout(3500)
+    print('mobile save toast:', await pg.locator('.toast').all_inner_texts(), 'overlays left:', await pg.locator('.overlay').count())
     await pg.click('#bnav [data-view="budgets"]'); await pg.wait_for_timeout(600)
     await pg.screenshot(path=str(OUT / '24-mobile-budgets.png'))
     await pg.click('#bnav [data-view="reports"]'); await pg.wait_for_timeout(600)

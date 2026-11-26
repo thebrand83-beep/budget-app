@@ -20,8 +20,9 @@ const api = async (path, opt = {}) => {
 export const sql = (r, query) => api(`/projects/${r}/database/query`, { method: 'POST', body: JSON.stringify({ query }) });
 
 if (!ref) {
-  const orgs = await api('/organizations'); if (!orgs.length) throw new Error('no organization');
   const projects = await api('/projects');
+  let orgs; try { orgs = await api('/organizations'); } catch { orgs = [...new Set(projects.map(p => p.organization_id))].map(id => ({ id })); } // scoped tokens may lack organizations_read
+  if (!orgs.length) throw new Error('no organization');
   const existing = projects.find(p => p.name === 'budget-app'); 
   if (existing) ref = existing.id;
   else {
@@ -40,11 +41,15 @@ await new Promise(r => setTimeout(r, 5000));
 // 1) schema + RLS + storage + allowlist trigger
 await sql(ref, readFileSync(join(ROOT, 'supabase', 'schema.sql'), 'utf8')); console.log('schema applied');
 
-// 2) auth settings: email+password, magic links, redirect URLs, min password length
-await api(`/projects/${ref}/config/auth`, { method: 'PATCH', body: JSON.stringify({
-  site_url: SITE, uri_allow_list: [SITE, SITE + '**', 'http://localhost:8841/**', 'http://127.0.0.1:8841/**'].join(','),
-  external_email_enabled: true, mailer_autoconfirm: false, password_min_length: 8, disable_signup: false,
-}) });
+// 2) auth settings. Shared project (--ref of another app): keep its site_url / password policy, only ADD our redirect URLs.
+const cur = await api(`/projects/${ref}/config/auth`);
+const proj = await api(`/projects/${ref}`); const shared = proj.name !== 'budget-app';
+const ours = [SITE + '**', 'http://localhost:8841/**', 'http://127.0.0.1:8841/**'];
+const allow = [...new Set([...(cur.uri_allow_list || '').split(',').filter(Boolean), ...ours])].join(',');
+await api(`/projects/${ref}/config/auth`, { method: 'PATCH', body: JSON.stringify(shared
+  ? { uri_allow_list: allow }
+  : { site_url: SITE, uri_allow_list: allow, external_email_enabled: true, mailer_autoconfirm: false, password_min_length: Math.max(8, cur.password_min_length || 0), disable_signup: false }) });
+console.log(shared ? 'shared project: added redirect URLs only' : 'auth configured');
 
 // 3) keys (anon is public; service role stays in memory for the admin step only)
 const keys = await api(`/projects/${ref}/api-keys?reveal=true`);

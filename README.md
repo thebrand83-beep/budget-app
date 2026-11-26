@@ -42,3 +42,10 @@ tests/run_rls_local.sh          # needs a local Postgres on /tmp:54329 (see test
 node tests/cloud_e2e.mjs         # real project; creates & deletes 2 throw-away users
 python3 tests/ui_preview.py      # screenshots to /workspace/budget-app-preview
 ```
+
+## Current deployment (v1 preview)
+- Supabase project: **shared** with photo-guides (`aqsdvzesnqtmnlkyrkeo`, region ap-northeast-2), because the access token could not create a new project (403).
+  All objects are `budget_*` / `budget_private` / bucket `budget-receipts`; photo-guides tables and its Auth `site_url` were not changed (only redirect URLs were added).
+- The allowlist trigger on `auth.users` now applies to the whole shared project: to add any future user (also for photo-guides),
+  first `insert into budget_private.allowed_emails(email) values ('new@email')`.
+- Not published: GitHub Pages is off, repo is private.
