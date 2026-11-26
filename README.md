@@ -29,7 +29,7 @@ tests/                 model tests, local RLS suite (embedded Postgres), cloud E
 - Every table has RLS (enabled + forced): `user_id = auth.uid()` for select/insert/update/delete; `anon` has no grants.
 - Composite foreign keys `(category_id, user_id)` stop linking another user's rows.
 - Receipts bucket `budget-receipts` is private; storage policies only allow `<auth.uid()>/…` paths; viewing uses signed URLs (10 min).
-- Sign-ups: `before insert` trigger on `auth.users` rejects any email not in `budget_private.allowed_emails` (only studioimage1983@gmail.com), **and** public sign-ups are disabled in Auth settings after the owner user is created.
+- Sign-ups: open to anyone (email confirmation required); each account is fully isolated by RLS and per-user storage folders. Optional single-owner lock: `supabase/signup_allowlist.sql` + `--private`.
 - Only the anon key ships to the browser. No service key client-side.
 
 ## Run locally (preview mode)
@@ -43,9 +43,10 @@ node tests/cloud_e2e.mjs         # real project; creates & deletes 2 throw-away 
 python3 tests/ui_preview.py      # screenshots to /workspace/budget-app-preview
 ```
 
-## Current deployment (v1 preview)
-- Supabase project: **shared** with photo-guides (`aqsdvzesnqtmnlkyrkeo`, region ap-northeast-2), because the access token could not create a new project (403).
-  All objects are `budget_*` / `budget_private` / bucket `budget-receipts`; photo-guides tables and its Auth `site_url` were not changed (only redirect URLs were added).
-- The allowlist trigger on `auth.users` now applies to the whole shared project: to add any future user (also for photo-guides),
-  first `insert into budget_private.allowed_emails(email) values ('new@email')`.
+## Deployment status
+- Target: dedicated Supabase project **budget-app** (Frankfurt), open sign-up with email confirmation. Provision with
+  `node scripts/provision.mjs --ref <ref>` (add `--private` for a single-owner lock via `supabase/signup_allowlist.sql`).
+- Until then `js/config.js` is empty and the app runs in local preview mode.
+- Everything budget-related was removed from the photo-guides project (`aqsdvzesnqtmnlkyrkeo`).
+- Public users need custom SMTP: see `docs/email-smtp-he.md`.
 - Not published: GitHub Pages is off, repo is private.

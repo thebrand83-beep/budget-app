@@ -70,7 +70,7 @@ export function aggregatesForAI(S) {
   const sm = monthSummary(txs, recurring, month, scope);
   const r = n => Math.round(n);
   return {
-    month, scope, currency: 'ILS', business_type: 'סטודיו לצילום, עוסק פטור בישראל',
+    month, scope, currency: 'ILS', business_type: S.user?.email === CONFIG.ownerEmail ? 'סטודיו לצילום, עוסק פטור בישראל' : 'אדם פרטי שייתכן שיש לו גם עסק קטן בישראל (למשל עוסק פטור)',
     this_month: { income: r(sm.income), expense: r(sm.expense), planned_income: r(sm.plannedIncome), planned_expense: r(sm.plannedExpense), projected_end_balance: r(sm.projected), days_left: sm.daysLeft },
     expenses_by_category: byCategory(sm.list, cats, 'expense').map(c => ({ category: c.name, total: r(c.total) })),
     income_by_category: byCategory(sm.list, cats, 'income').map(c => ({ category: c.name, total: r(c.total) })),
@@ -83,7 +83,7 @@ export function aggregatesForAI(S) {
 }
 
 export async function aiTips(apiKey, agg, signal) {
-  const prompt = `אתה יועץ פיננסי אישי מנוסה לעצמאים בישראל. לפניך נתונים מצרפיים (בשקלים) של צלם עם סטודיו שהוא עוסק פטור, ומנהל באותה אפליקציה גם את התקציב הפרטי שלו.
+  const prompt = `אתה יועץ פיננסי אישי מנוסה לעצמאים בישראל. לפניך נתונים מצרפיים (בשקלים) של משתמש שמנהל באפליקציה את התקציב הפרטי שלו ולעיתים גם עסק קטן (ראה business_type).
 כתוב 5 טיפים קונקרטיים, מעשיים ומותאמים בדיוק למספרים האלה (ציין מספרים ספציפיים מהנתונים). אל תמציא נתונים שלא קיימים. אל תיתן ייעוץ השקעות ספציפי (מניות/קרנות). בנושאי מס, כתוב שכדאי לאמת מול רואה חשבון.
 ענה ב-JSON בלבד: {"tips":[{"title":"כותרת קצרה עד 8 מילים","text":"1–2 משפטים","level":"warn|good|info"}]}.
 הנתונים:\n${JSON.stringify(agg)}`;

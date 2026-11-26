@@ -28,7 +28,10 @@ function errMsg(e) {
   const m = String(e?.message || e || '');
   if (/Invalid login credentials/i.test(m)) return 'מייל או סיסמה שגויים';
   if (/Email not confirmed/i.test(m)) return 'צריך לאשר את המייל (בדוק את תיבת הדואר)';
-  if (/Signups not allowed|restricted|not allowed for otp|User not found/i.test(m)) return 'הכניסה מורשית רק לבעל החשבון';
+  if (/User already registered/i.test(m)) return 'כבר קיים חשבון עם המייל הזה. עבור ל"כניסה" או "שכחתי סיסמה"';
+  if (/not allowed for otp|User not found|Signups not allowed/i.test(m)) return 'לא נמצא חשבון עם המייל הזה. עבור ל"הרשמה"';
+  if (/Error sending|confirmation email|smtp/i.test(m)) return 'שליחת המייל נכשלה כרגע. נסה שוב מאוחר יותר';
+  if (/Password should be|weak/i.test(m)) return 'הסיסמה חלשה מדי. בחר סיסמה ארוכה יותר';
   if (/rate limit|too many/i.test(m)) return 'יותר מדי ניסיונות. נסה שוב בעוד כמה דקות';
   if (/Failed to fetch|NetworkError|network/i.test(m)) return 'אין חיבור לאינטרנט. נסה שוב';
   if (/mime|file type/i.test(m)) return 'סוג הקובץ לא נתמך (תמונה או PDF בלבד)';
@@ -97,31 +100,42 @@ function setSync() {
 addEventListener('online', setSync); addEventListener('offline', setSync);
 
 // ---------------------------------------------------------------- auth
-function renderAuth() {
+function renderAuth(mode = 'login') {
   $('#fab').classList.add('hidden'); $('#bnav').classList.add('hidden'); $('#tabs').innerHTML = ''; $('#sync').classList.add('hidden'); $('#btnSettings').classList.add('hidden');
+  const signup = mode === 'signup';
   $('#app').innerHTML = `<div class="auth"><div class="card">
     <div class="brand-mark" style="width:52px;height:52px;border-radius:15px">${ic('wallet')}</div>
-    <h1>התקציב שלי</h1><p class="muted small">כניסה מאובטחת. הנתונים והקבלות נגישים רק לך, ומסתנכרנים בין הטלפון למחשב.</p>
-    <form id="loginF" style="margin-top:18px">
-      <div class="field"><label>מייל</label><input class="inp" type="email" id="lEmail" autocomplete="username" required value="${esc(localStorage.getItem('budget.lastEmail') || CONFIG.ownerEmail)}" dir="ltr"></div>
-      <div class="field"><label>סיסמה</label><input class="inp" type="password" id="lPass" autocomplete="current-password" dir="ltr"></div>
-      <button class="btn gold block" id="lBtn">כניסה</button>
+    <h1>התקציב שלי</h1><p class="muted small">ניהול הכנסות, הוצאות וקבלות. לכל משתמש חשבון אישי ונפרד: הנתונים והקבלות שלך נגישים רק לך, ומסתנכרנים בין הטלפון למחשב.</p>
+    <div class="kind-seg" style="margin-top:16px"><button data-auth="login" class="${!signup ? 'on' : ''}" style="${!signup ? 'background:rgba(212,175,106,.14);color:var(--gold2)' : ''}">כניסה</button><button data-auth="signup" class="${signup ? 'on' : ''}" style="${signup ? 'background:rgba(212,175,106,.14);color:var(--gold2)' : ''}">הרשמה</button></div>
+    <form id="loginF">
+      <div class="field"><label>מייל</label><input class="inp" type="email" id="lEmail" autocomplete="username" required value="${esc(localStorage.getItem('budget.lastEmail') || '')}" placeholder="name@example.com" dir="ltr"></div>
+      <div class="field"><label>סיסמה${signup ? ' (לפחות 8 תווים)' : ''}</label><input class="inp" type="password" id="lPass" autocomplete="${signup ? 'new-password' : 'current-password'}" ${signup ? 'minlength="8"' : ''} dir="ltr"></div>
+      <button class="btn gold block" id="lBtn">${signup ? 'יצירת חשבון' : 'כניסה'}</button>
     </form>
-    <div class="btn-row" style="margin-top:10px;justify-content:space-between">
+    ${signup ? '' : `<div class="btn-row" style="margin-top:10px;justify-content:space-between">
       <button class="btn sm" id="lMagic">${ic('spark')} שלח לי קישור כניסה למייל</button>
-      <button class="btn sm" id="lReset">שכחתי סיסמה</button>
-    </div><div id="lMsg"></div>
-    <p class="dim small" style="margin-top:16px;display:flex;gap:6px;align-items:center">${ic('shield')} הרשמה חדשה חסומה. רק בעל החשבון יכול להיכנס.</p>
+      <button class="btn sm" id="lReset">שכחתי סיסמה</button></div>`}
+    <div id="lMsg"></div>
+    <p class="dim small" style="margin-top:16px;display:flex;gap:6px;align-items:center">${ic('shield')} ${signup ? 'אחרי ההרשמה יישלח אליך מייל לאישור הכתובת.' : 'כל חשבון מבודד: אף משתמש לא רואה נתונים של משתמש אחר.'}</p>
   </div></div>`;
+  $$('[data-auth]').forEach(b => b.onclick = () => renderAuth(b.dataset.auth));
   const msg = (t, ok) => $('#lMsg').innerHTML = `<div class="msg ${ok ? 'ok' : 'err'}">${esc(t)}</div>`;
   const email = () => { const e = $('#lEmail').value.trim().toLowerCase(); localStorage.setItem('budget.lastEmail', e); return e; };
   $('#loginF').onsubmit = async ev => {
-    ev.preventDefault(); const b = $('#lBtn'); b.disabled = true; b.innerHTML = '<span class="spin"></span>';
-    try { S.user = await S.store.signIn(email(), $('#lPass').value); $('#sync').classList.remove('hidden'); $('#btnSettings').classList.remove('hidden'); await afterLogin(); }
-    catch (e) { msg(errMsg(e)); b.disabled = false; b.textContent = 'כניסה'; }
+    ev.preventDefault(); const b = $('#lBtn'); const label = b.textContent; b.disabled = true; b.innerHTML = '<span class="spin"></span>';
+    try {
+      if (signup) {
+        if ($('#lPass').value.length < 8) throw new Error('הסיסמה צריכה לכלול לפחות 8 תווים');
+        const d = await S.store.signUp(email(), $('#lPass').value);
+        if (d.session) { S.user = d.user; } else { msg('נרשמת! שלחנו לך מייל לאישור הכתובת. לחץ על הקישור במייל כדי להיכנס.', true); b.disabled = false; b.textContent = label; return; }
+      } else S.user = await S.store.signIn(email(), $('#lPass').value);
+      $('#sync').classList.remove('hidden'); $('#btnSettings').classList.remove('hidden'); await afterLogin();
+    } catch (e) { msg(errMsg(e)); b.disabled = false; b.textContent = label; }
   };
-  $('#lMagic').onclick = async () => { try { await S.store.magicLink(email()); msg('שלחתי קישור כניסה למייל. פתח אותו במכשיר הזה.', true); } catch (e) { msg(errMsg(e)); } };
-  $('#lReset').onclick = async () => { try { await S.store.resetPassword(email()); msg('שלחתי מייל לאיפוס סיסמה.', true); } catch (e) { msg(errMsg(e)); } };
+  if (!signup) {
+    $('#lMagic').onclick = async () => { if (!$('#lEmail').value) return msg('הזן מייל'); try { await S.store.magicLink(email()); msg('שלחתי קישור כניסה למייל. פתח אותו במכשיר הזה.', true); } catch (e) { msg(errMsg(e)); } };
+    $('#lReset').onclick = async () => { if (!$('#lEmail').value) return msg('הזן מייל'); try { await S.store.resetPassword(email()); msg('שלחתי מייל לאיפוס סיסמה.', true); } catch (e) { msg(errMsg(e)); } };
+  }
 }
 
 // ---------------------------------------------------------------- nav

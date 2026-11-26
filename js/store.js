@@ -29,6 +29,7 @@ class CloudStore {
   }
   onAuth(cb) { this.sb.auth.onAuthStateChange((ev, s) => { this.user = s?.user || null; cb(ev, this.user); }); }
   async signIn(email, password) { const { data, error } = await this.sb.auth.signInWithPassword({ email, password }); if (error) throw error; this.user = data.user; return data.user; }
+  async signUp(email, password) { const { data, error } = await this.sb.auth.signUp({ email, password, options: { emailRedirectTo: location.href.split('#')[0].split('?')[0] } }); if (error) throw error; return data; }
   async magicLink(email) { const { error } = await this.sb.auth.signInWithOtp({ email, options: { shouldCreateUser: false, emailRedirectTo: location.href.split('#')[0] } }); if (error) throw error; }
   async resetPassword(email) { const { error } = await this.sb.auth.resetPasswordForEmail(email, { redirectTo: location.href.split('#')[0] }); if (error) throw error; }
   async setPassword(password) { const { error } = await this.sb.auth.updateUser({ password }); if (error) throw error; }

@@ -8,7 +8,6 @@ const mgmt = async (p, o = {}) => { const r = await fetch('https://api.supabase.
 const email = process.env.BUDGET_TEST_EMAIL;
 if (!/^budget-e2e-ui-/.test(email)) throw new Error('test email must start with budget-e2e-ui-');
 const SERVICE = (await mgmt(`/projects/${REF}/api-keys?reveal=true`)).find(k => k.name === 'service_role').api_key;
-await mgmt(`/projects/${REF}/database/query`, { method: 'POST', body: JSON.stringify({ query: `insert into budget_private.allowed_emails(email) values ('${email}') on conflict do nothing` }) });
 const admin = createClient(URL_, SERVICE, { auth: { persistSession: false } });
 const { error } = await admin.auth.admin.createUser({ email, password: process.env.BUDGET_TEST_PASSWORD, email_confirm: true });
 if (error) throw error; console.log('UI test user created:', email);

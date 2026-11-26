@@ -1,33 +1,11 @@
 -- ============================================================================
--- Budget app (Ziv) — database schema, Row Level Security, storage and sign-up lock
+-- Budget app — database schema, Row Level Security and private receipts storage.
+-- Open sign-up: every user gets a fully isolated account (RLS + per-user storage folder).
+-- Optional single-owner lock lives in supabase/signup_allowlist.sql (NOT used on the shared app).
 -- Idempotent: safe to run more than once. Run as the project owner (SQL editor /
 -- Management API). All tables are prefixed budget_ so they can also live next to
 -- other apps in an existing project without clashing.
 -- ============================================================================
-
--- ---------- 1. Sign-up allowlist (only Ziv may register) ---------------------
-create schema if not exists budget_private;
-revoke all on schema budget_private from public;
-
-create table if not exists budget_private.allowed_emails (
-  email text primary key check (email = lower(email))
-);
-insert into budget_private.allowed_emails(email) values ('studioimage1983@gmail.com')
-  on conflict do nothing;
-
-create or replace function budget_private.enforce_signup_allowlist()
-returns trigger language plpgsql security definer set search_path = '' as $$
-begin
-  if new.email is null
-     or not exists (select 1 from budget_private.allowed_emails a where a.email = lower(new.email)) then
-    raise exception 'Sign-ups are restricted for this app' using errcode = '42501';
-  end if;
-  return new;
-end $$;
-
-drop trigger if exists budget_signup_allowlist on auth.users;
-create trigger budget_signup_allowlist before insert on auth.users
-  for each row execute function budget_private.enforce_signup_allowlist();
 
 -- ---------- 2. Tables --------------------------------------------------------
 create table if not exists public.budget_categories (

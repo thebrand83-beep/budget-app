@@ -20,15 +20,15 @@ const users = [];
 const KEEP = process.env.KEEP_TEST_USER === '1';  // keep user A for the UI screenshot run, cleaned by --cleanup
 if (process.argv.includes('--cleanup')) { await cleanup(); process.exit(0); }
 try {
-  // stranger sign-up must fail (signups disabled + allowlist)
+  // open sign-up: a stranger CAN register (email confirmation required). With the built-in mailer the confirmation
+  // mail to a non-team address may be refused; either way the endpoint must not say "Signups not allowed".
   const anonC = createClient(URL_, ANON, { auth: { persistSession: false } });
-  const su = await anonC.auth.signUp({ email: `stranger-${stamp}@example.com`, password: pw });
-  assert.ok(su.error, 'stranger sign-up should fail'); ok('public sign-up blocked (' + su.error.message + ')');
-  // test users: allowlist temporarily, created by admin
-  await sql(`insert into budget_private.allowed_emails(email) values ('${A}'),('${B}') on conflict do nothing`);
+  const su = await anonC.auth.signUp({ email: `budget-e2e-stranger-${stamp}@example.com`, password: pw });
+  assert.ok(!/signups? not allowed/i.test(su.error?.message || ''), 'sign-up should be open');
+  assert.ok(!su.data?.session, 'no session before email confirmation');
+  ok('public sign-up is open, no session until the email is confirmed (' + (su.error ? 'mailer: ' + su.error.message : 'user created, awaiting confirmation') + ')');
+  // two confirmed users (as if both confirmed their email)
   for (const e of [A, B]) { const { data, error } = await admin.auth.admin.createUser({ email: e, password: pw, email_confirm: true }); if (error) throw error; users.push(data.user); }
-  const notAllowed = await admin.auth.admin.createUser({ email: `notallowed-${stamp}@example.com`, password: pw, email_confirm: true });
-  assert.ok(notAllowed.error, 'allowlist trigger should block non-allowlisted user even via admin'); ok('allowlist trigger blocks unknown emails even for admin API');
   const a = createClient(URL_, ANON, { auth: { persistSession: false } }); await a.auth.signInWithPassword({ email: A, password: pw });
   const b = createClient(URL_, ANON, { auth: { persistSession: false } }); await b.auth.signInWithPassword({ email: B, password: pw });
   const uidA = users[0].id;
@@ -57,7 +57,7 @@ try {
   const anonList = await anonC.from('budget_transactions').select('*'); assert.ok(anonList.error || anonList.data.length === 0); ok('anonymous client sees no rows');
   // B: isolation
   for (const t of ['budget_transactions', 'budget_categories', 'budget_recurring', 'budget_settings']) { const { data, error } = await b.from(t).select('*'); if (error) throw error; assert.equal(data.length, 0, t); }
-  ok('B sees 0 of A\'s rows in all 4 tables');
+  ok('B (a self-registered stranger) sees 0 of A\'s rows in all 4 tables');
   const bUpd = await b.from('budget_transactions').update({ amount: 1 }).eq('id', txId).select(); assert.equal(bUpd.data?.length || 0, 0); ok('B cannot update A\'s transaction');
   const bDel = await b.from('budget_transactions').delete().eq('id', txId).select(); assert.equal(bDel.data?.length || 0, 0); ok('B cannot delete A\'s transaction');
   const bIns = await b.from('budget_transactions').insert({ user_id: uidA, kind: 'expense', amount: 5 }); assert.ok(bIns.error); ok('B cannot insert rows as A');
@@ -79,7 +79,6 @@ async function cleanup() {
     for (const d of objs || []) { const { data: files } = await admin.storage.from('budget-receipts').list(`${u.id}/${d.name}`); await admin.storage.from('budget-receipts').remove((files || []).map(f => `${u.id}/${d.name}/${f.name}`)); }
     await admin.auth.admin.deleteUser(u.id); // rows cascade via on delete cascade
   }
-  await sql(`delete from budget_private.allowed_emails where email like 'budget-e2e-%'`);
   const left = await sql(`select (select count(*) from auth.users where email like 'budget-e2e-%') u, (select count(*) from public.budget_transactions t join auth.users x on x.id=t.user_id where x.email like 'budget-e2e-%') t, (select count(*) from storage.objects where bucket_id='budget-receipts' and (storage.foldername(name))[1] not in (select id::text from auth.users)) orphan_receipts`);
   console.log('cleanup done:', JSON.stringify(left));
 }

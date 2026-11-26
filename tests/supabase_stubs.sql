@@ -1,7 +1,7 @@
 -- Minimal local stand-ins for Supabase's auth & storage schemas, so schema.sql
 -- and its RLS can be tested on a plain Postgres. auth.uid() reads the JWT 'sub'
 -- claim exactly like Supabase does.
-create role anon nologin; create role authenticated nologin;
+do $r$ begin if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon nologin; end if; if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if; end $r$;
 create schema auth; create schema storage;
 create table auth.users (id uuid primary key default gen_random_uuid(), email text);
 create function auth.uid() returns uuid language sql stable as
