@@ -4,6 +4,7 @@ import * as M from './model.js';
 import { donut, trendChart } from './charts.js';
 import { ruleTips, aiTips, aggregatesForAI, checkKey } from './tips.js';
 import { exportCSV, exportXLSX, exportReceiptsZip } from './export.js';
+import * as SV from './savings.js';
 import { buildReport, describe as describeReport, receiptToSrc } from './report.js';
 import { renderPages, imagesToPdf, deliverPdf, isStandalone, isIOS, isMobile } from './pdf.js';
 import { DEFAULT_CATEGORIES, sampleData } from './defaults.js';
@@ -54,13 +55,13 @@ function errMsg(e) {
 
 // ---------------------------------------------------------------- state
 const S = {
-  store: createStore(), user: null, cats: [], txs: [], recurring: [], settings: {},
+  store: createStore(), user: null, cats: [], txs: [], recurring: [], settings: {}, goals: [], sentries: [], svGoal: 'all',
   month: M.monthKey(M.todayStr()), scope: localStorage.getItem('budget.scope') || 'all', view: 'overview',
   filters: { q: '', kind: 'all', cat: 'all', receipt: 'all', period: 'month' }, pieKind: 'expense', ai: null,
 };
 window.__budget = S; // for debugging / tests
 
-const VIEWS = [['overview', 'סקירה', 'home'], ['tx', 'תנועות', 'list'], ['budgets', 'תקציבים', 'target'], ['recurring', 'קבועות', 'repeat'], ['reports', 'דוחות', 'doc']];
+const VIEWS = [['overview', 'סקירה', 'home'], ['tx', 'תנועות', 'list'], ['budgets', 'תקציבים', 'target'], ['savings', 'חיסכון', 'piggy'], ['recurring', 'קבועות', 'repeat'], ['reports', 'דוחות', 'doc']];
 
 // ---------------------------------------------------------------- boot
 async function boot() {
@@ -100,8 +101,8 @@ async function afterLogin() {
   render();
 }
 async function loadAll() {
-  const { cats, txs, recurring, settings } = await S.store.loadAll();
-  Object.assign(S, { cats, txs, recurring, settings }); setSync();
+  const { cats, txs, recurring, settings, goals, sentries } = await S.store.loadAll();
+  Object.assign(S, { cats, txs, recurring, settings, goals: goals || [], sentries: sentries || [] }); setSync();
 }
 let lastRefresh = 0;
 async function refresh(quiet, force) {
@@ -111,9 +112,18 @@ async function refresh(quiet, force) {
 }
 async function runRecurring() {
   const due = M.dueRecurring(S.recurring, S.txs);
+  if (due.length) {
+    const added = await S.store.insertGenerated(due.map(t => ({ ...t, id: uuid() })));
+    if (added.length) { S.txs = [...added, ...S.txs].sort((a, b) => b.date.localeCompare(a.date)); toast(`נוספו ${added.length} חיובים/הכנסות קבועים אוטומטית`); }
+  }
+  await runSavingsAuto();
+}
+/** Monthly automatic savings deposits that have come due (once per goal per month, even from two devices). */
+async function runSavingsAuto() {
+  const due = SV.dueAuto(S.goals, S.sentries);
   if (!due.length) return;
-  const added = await S.store.insertGenerated(due.map(t => ({ ...t, id: uuid() })));
-  if (added.length) { S.txs = [...added, ...S.txs].sort((a, b) => b.date.localeCompare(a.date)); toast(`נוספו ${added.length} חיובים/הכנסות קבועים אוטומטית`); }
+  const added = await S.store.insertGeneratedSavings(due.map(e => ({ ...e, id: uuid() })));
+  if (added.length) { S.sentries = sortEntries([...added, ...S.sentries]); toast(`נוספו ${added.length} הפקדות חודשיות לחיסכון`); }
 }
 // Sync status chip + "saving / waiting" badges on rows that are not in the cloud yet
 let lastPending = 0;
@@ -133,7 +143,7 @@ function setSync() {
 }
 function onSyncStatus(st) {
   setSync();
-  $$('[data-tx]').forEach(b => b.classList.toggle('pending', !!S.store.isPending(b.dataset.tx)));
+  $$('[data-tx],[data-sent],[data-goal]').forEach(b => b.classList.toggle('pending', !!S.store.isPending(b.dataset.tx || b.dataset.sent || b.dataset.goal)));
   if (lastPending && !st.pending && st.state === 'idle') setTimeout(() => { if (!$('.overlay')) refresh(true, true); }, 400); // queue drained: pull the server's view
   lastPending = st.pending;
 }
@@ -194,7 +204,8 @@ function bindToolbar() {
   $$('[data-scope]').forEach(b => b.onclick = () => { S.scope = b.dataset.scope; localStorage.setItem('budget.scope', S.scope); S.ai = null; render(); });
 }
 function render() {
-  const fn = { overview: viewOverview, tx: viewTx, budgets: viewBudgets, recurring: viewRecurring, reports: viewReports }[S.view];
+  const fn = { overview: viewOverview, tx: viewTx, budgets: viewBudgets, savings: viewSavings, recurring: viewRecurring, reports: viewReports }[S.view];
+  $('#fab').classList.toggle('fab-off', S.view === 'savings'); // the savings screen has its own deposit buttons
   $('#app').innerHTML = `<section class="view">${toolbar()}${fn()}</section><div class="foot">הנתונים מוגנים: כל שורה וכל קבלה שייכות רק לחשבון שלך · גרסה ${APP_VERSION}</div>`;
   bindToolbar(); bindView();
 }
@@ -202,7 +213,8 @@ const cat = id => S.cats.find(c => c.id === id);
 
 // ---------------------------------------------------------------- overview
 function viewOverview() {
-  const sm = M.monthSummary(S.txs, S.recurring, S.month, S.scope);
+  const sm = summary();
+  const alloc = M.round2(sm.saved + sm.plannedSaved);
   const items = M.byCategory(sm.list, S.cats, S.pieKind);
   const tr = M.trend(S.txs, S.month, 6, S.scope);
   const tips = ruleTips({ ...S }, fmtR);
@@ -210,19 +222,20 @@ function viewOverview() {
   const to = M.turnover(S.txs, +S.month.slice(0, 4), ceiling);
   const bw = M.budgets(S.txs, S.cats, S.month, S.scope).filter(b => b.state === 'over' || b.state === 'mid');
   const label = sm.isCurrent ? 'עם כמה תישאר בסוף החודש' : sm.key > M.monthKey(M.todayStr()) ? 'צפי לחודש' : 'מאזן החודש';
-  const plannedTxt = sm.planned.length ? `כולל ${sm.planned.length} תנועות קבועות שעוד צפויות החודש` : 'לפי ההכנסות וההוצאות שנרשמו';
+  const plannedTxt = (sm.planned.length ? `כולל ${sm.planned.length} תנועות קבועות שעוד צפויות החודש` : 'לפי ההכנסות וההוצאות שנרשמו') + (alloc ? ` · אחרי ${alloc > 0 ? 'הפרשה' : 'משיכה'} של ${fmtR(Math.abs(alloc))} לחיסכון` : '');
   return `<div class="grid two">
     <div class="card hero">
       <div class="lbl">${ic('wallet')} ${label}${S.scope !== 'all' ? ` · ${SCOPE[S.scope]}` : ''}</div>
-      <div class="big num ${sm.projected < 0 ? 'neg' : 'gold-text'}">${fmt(sm.projected)}</div>
+      <div class="big num ${sm.left < 0 ? 'neg' : 'gold-text'}">${fmt(sm.left)}</div>
       <div class="sub">${plannedTxt}</div>
-      <div class="stats">
+      <div class="stats ${alloc ? 's4' : ''}">
         <div class="stat in"><span>הכנסות</span><b class="num">${fmtR(sm.income)}</b></div>
         <div class="stat out"><span>הוצאות</span><b class="num">${fmtR(sm.expense)}</b></div>
         <div class="stat plan"><span>צפוי עוד</span><b class="num">${sm.plannedIncome - sm.plannedExpense >= 0 ? '+' : ''}${fmtR(sm.plannedIncome - sm.plannedExpense)}</b></div>
+        ${alloc ? `<button class="stat sav" data-view="savings"><span>${ic('piggy', 'i sm')} לחיסכון</span><b class="num">${alloc > 0 ? '-' : '+'}${fmtR(Math.abs(alloc))}</b></button>` : ''}
       </div>
-      ${sm.isCurrent && sm.projected > 0 ? `<div class="daily">${ic('target')}<span>אפשר להוציא בערך <b class="num">${fmtR(sm.perDay)}</b> ליום ב-${sm.daysLeft} הימים שנשארו</span></div>` : ''}
-      ${sm.isCurrent && sm.projected < 0 ? `<div class="daily neg">${ic('warn')}<span>בקצב הזה החודש ייגמר במינוס</span></div>` : ''}
+      ${sm.isCurrent && sm.left > 0 ? `<div class="daily">${ic('target')}<span>אפשר להוציא בערך <b class="num">${fmtR(sm.perDay)}</b> ליום ב-${sm.daysLeft} הימים שנשארו</span></div>` : ''}
+      ${sm.isCurrent && sm.left < 0 ? `<div class="daily neg">${ic('warn')}<span>בקצב הזה החודש ייגמר במינוס</span></div>` : ''}
     </div>
     <div class="card">
       <h3>${ic('pie')} התפלגות לפי קטגוריה<span class="sp"></span><span class="seg small"><button data-pie="expense" class="${S.pieKind === 'expense' ? 'on' : ''}">הוצאות</button><button data-pie="income" class="${S.pieKind === 'income' ? 'on' : ''}">הכנסות</button></span></h3>
@@ -239,6 +252,7 @@ function viewOverview() {
       <div class="ai-row">${localStorage.getItem(GKEY) ? `<button class="btn sm" id="aiBtn">${ic('spark')} ${S.ai?.tips ? 'רענן' : 'קבל'} טיפים חכמים מ-Gemini</button>` : `<button class="btn sm" id="aiSetup">${ic('spark')} טיפים חכמים עם Gemini (הגדרה)</button>`}<span class="dim small" id="aiStatus">${S.ai?.model ? 'נוצר עם ' + esc(S.ai.model) + ' · נשלחים רק סכומים מצרפיים' : 'נשלחים רק סכומים מצרפיים, בלי פרטים או קבלות'}</span></div>
     </div>
     ${recentCard(sm)}
+    ${savingsCard()}
     ${S.scope !== 'personal' ? turnoverCard(to) : ''}
     ${bw.length ? `<div class="card"><h3>${ic('target')} תקציבים שדורשים תשומת לב</h3>${bw.map(budgetRow).join('')}</div>` : ''}
   </div>`;
@@ -327,6 +341,217 @@ function openBudgetEditor() {
   };
 }
 
+// ---------------------------------------------------------------- savings
+// Goals + deposits/withdrawals. Deposits are allocations out of the month's money, never expenses: they do not
+// appear in the expense charts, categories or reports' expense totals. They reduce the "left" balance instead.
+const sortEntries = l => [...l].sort((a, b) => b.date.localeCompare(a.date) || String(b.created_at || '').localeCompare(String(a.created_at || '')));
+const goalOf = id => S.goals.find(g => g.id === id);
+const savAlloc = (key = S.month, scope = S.scope) => SV.monthAllocation(S.goals, S.sentries, key, scope, M.todayStr());
+const summary = (key = S.month, scope = S.scope) => M.monthSummary(S.txs, S.recurring, key, scope, M.todayStr(), savAlloc(key, scope));
+const savingsFor = sel => S.goals.length ? { goals: S.goals, entries: S.sentries, from: sel.from, to: sel.to, today: M.todayStr() } : null;
+const tagBadge = g => g.scope ? `<span class="badge ${g.scope === 'business' ? 'biz' : ''}">${SCOPE[g.scope]}</span>` : '';
+
+function ring(pct, color, { size = 92, stroke = 9, inner = '', done = false } = {}) {
+  const r = (size - stroke) / 2, c = 2 * Math.PI * r, p = Math.max(0, Math.min(1, pct)), h = size / 2;
+  return `<div class="ring ${done ? 'done' : ''}" style="width:${size}px;height:${size}px"><svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true">
+    <circle cx="${h}" cy="${h}" r="${r}" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="${stroke}"/>
+    <circle class="rg" cx="${h}" cy="${h}" r="${r}" fill="none" stroke="${done ? '#5fd39a' : color}" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${h} ${h})"/></svg><div class="ri">${inner}</div></div>`;
+}
+const STATUS = { done: ['הושג', 'ok'], ontrack: ['בקצב הנכון', 'ok'], behind: ['מאחורי הקצב', 'warn'], overdue: ['עבר התאריך', 'over'], start: ['כדאי להתחיל', 'warn'], open: ['', ''] };
+
+function goalCard(st) {
+  const g = st.goal, pc = Math.round(st.pct * 100), [lbl, cls] = STATUS[st.status];
+  const line = st.done ? '<span class="gl ok">🎉 הגעת ליעד!</span>'
+    : st.status === 'overdue' ? `<span class="gl bad">תאריך היעד עבר · חסרים ${fmtR(st.remaining)}</span>`
+    : st.hasDate ? `<span class="gl">נדרש <b class="num">${fmtR(st.needed)}</b> בחודש עד ${monthName(g.target_date.slice(0, 7))}</span>`
+    : st.etaMonths ? `<span class="gl">בקצב הנוכחי תגיע ליעד בעוד כ-${st.etaMonths} חודשים</span>` : '<span class="gl dim">קבע תאריך יעד כדי לראות כמה להפקיד בחודש</span>';
+  return `<div class="card goal ${st.done ? 'is-done' : ''}" data-goal="${g.id}" style="--gc:${esc(g.color)}">
+    <div class="g-top">
+      ${ring(st.pct, g.color, { done: st.done, inner: `<span class="ri-ic">${esc(g.icon)}</span><span class="ri-pc num">${st.done ? '✓' : pc + '%'}</span>` })}
+      <div class="g-info">
+        <div class="g-name"><b>${esc(g.name)}</b>${tagBadge(g)}${lbl && !st.done ? `<span class="badge ${cls}">${lbl}</span>` : ''}<span class="pend-b"><span class="p-on">שומר…</span><span class="p-off">ממתין לחיבור</span></span></div>
+        <div class="g-amt"><b class="num">${fmtR(st.saved)}</b><span> מתוך <span class="num">${fmtR(st.target)}</span></span></div>
+        <div class="g-line">${line}</div>
+      </div>
+      <button class="icon-btn g-edit" data-gedit="${g.id}" aria-label="עריכת יעד">${ic('edit')}</button>
+    </div>
+    <div class="g-foot">
+      <button class="btn gold sm" data-sdep="${g.id}">${ic('plus')} הפקדה</button><button class="btn sm" data-swd="${g.id}">${ic('minus')} משיכה</button>
+      ${+g.auto_amount > 0 ? `<span class="g-auto">${ic('repeat')} <span class="num">${fmtR(g.auto_amount)}</span> ב-${g.auto_day} לחודש</span>` : ''}
+    </div></div>`;
+}
+function entryRow(e) {
+  const g = goalOf(e.goal_id) || { name: 'יעד שנמחק', icon: '•', color: '#6f6a62' }, dep = e.kind === 'deposit';
+  return `<button class="tx ${e.planned ? 'planned' : ''} ${!e.planned && S.store.isPending(e.id) ? 'pending' : ''}" data-sent="${e.id}">
+    <span class="cat-ic" style="background:${esc(g.color)}22;color:${esc(g.color)}">${esc(g.icon)}</span>
+    <span class="mid"><span class="t1">${esc(g.name)}${e.notes ? ' · ' + esc(e.notes) : ''}</span>
+      <span class="t2">${e.planned ? '<span class="badge warn">צפוי</span>' : ''}<span class="badge ${dep ? 'gold' : 'warn'}">${dep ? 'הפקדה' : 'משיכה'}</span>${e.auto_date ? ` <span class="badge rec">${ic('repeat')}אוטומטי</span>` : ''}<span class="pend-b"><span class="p-on">שומר…</span><span class="p-off">ממתין לחיבור</span></span></span></span>
+    <span class="amt num ${dep ? 'in' : 'wd'}">${dep ? '+' : '-'}${fmt(e.amount)}</span><span class="edit-hint" aria-hidden="true">${ic('edit')}</span></button>`;
+}
+function savingsCard() {
+  const T = SV.totals(S.goals, S.sentries, S.scope); if (!T.count) return '';
+  const top = [...T.stats].sort((a, b) => (a.done - b.done) || b.pct - a.pct).slice(0, 3);
+  return `<div class="card"><h3>${ic('piggy')} חיסכון<span class="sp"></span><button class="btn sm" data-view="savings">לאזור החיסכון</button></h3>
+    <div class="sv-mini"><span class="big num gold-text">${fmt(T.saved)}</span><span class="muted small">מתוך ${fmtR(T.target)} · ${Math.round(T.pct * 100)}%</span></div>
+    <div class="bar" style="margin:8px 0 10px"><i style="width:${(T.pct * 100).toFixed(1)}%"></i></div>
+    ${top.map(x => `<div class="mini-goal"><span class="cat-ic" style="background:${esc(x.goal.color)}22;color:${esc(x.goal.color)}">${esc(x.goal.icon)}</span><span class="nm">${esc(x.goal.name)}</span><div class="bar"><i style="width:${(x.pct * 100).toFixed(1)}%;background:${esc(x.goal.color)}"></i></div><span class="num pc">${Math.round(x.pct * 100)}%</span></div>`).join('')}</div>`;
+}
+function viewSavings() {
+  const T = SV.totals(S.goals, S.sentries, S.scope), mo = savAlloc();
+  const scopeTxt = S.scope !== 'all' ? ` · ${SCOPE[S.scope]}` : '';
+  if (!T.count) return `<div class="grid two">
+    <div class="card hero sv-empty"><div class="lbl">${ic('piggy')} חיסכון${scopeTxt}</div>
+      <div class="big gold-text" style="font-size:1.9rem">${S.goals.length ? 'אין יעדים בתצוגה הזאת' : 'בוא נתחיל לחסוך'}</div>
+      <p class="sub">${S.goals.length ? 'יש יעדים בתיוג אחר. עבור ל"הכל" כדי לראות אותם, או צור יעד חדש.' : 'יעד חיסכון הוא סכום וסיבה. האפליקציה תחשב כמה להפקיד בכל חודש, תראה את ההתקדמות ותוריד את ההפקדות מהסכום שנשאר לך החודש.'}</p>
+      <div class="btn-row" style="margin-top:14px"><button class="btn gold" id="svAddGoal">${ic('plus')} יעד חיסכון חדש</button></div></div>
+    <div class="card"><h3>${ic('spark')} התחלה מהירה</h3><div class="tpl-grid">${SV.GOAL_TEMPLATES.map((t, i) => `<button class="tpl" data-tpl="${i}" style="--gc:${t.color}"><span class="ic">${t.icon}</span><b>${esc(t.name)}</b><small>${esc(t.hint)}</small></button>`).join('')}</div></div></div>`;
+  const tips = SV.savingsTips({ goals: S.goals, entries: S.sentries, txs: S.txs, month: S.month, scope: S.scope, fmt: fmtR });
+  const order = [...T.stats].sort((a, b) => (a.done - b.done) || String(a.goal.created_at || '').localeCompare(String(b.goal.created_at || '')) || a.goal.name.localeCompare(b.goal.name, 'he'));
+  const ids = new Set(S.goals.filter(g => SV.inScope(g, S.scope)).map(g => g.id));
+  const planned = SV.plannedAuto(S.goals.filter(g => ids.has(g.id)), S.sentries, S.month).map(p => ({ ...p, id: 'plan-' + p.goal_id + '-' + p.date }));
+  const gsel = ids.has(S.svGoal) ? S.svGoal : 'all';
+  const acts = sortEntries(S.sentries.filter(e => ids.has(e.goal_id) && (gsel === 'all' || e.goal_id === gsel)));
+  const shown = acts.slice(0, 40);
+  const chip = (id, label) => `<button class="chip ${gsel === id ? 'on' : ''}" data-svf="${id}">${label}</button>`;
+  return `<div class="grid two">
+    <div class="card hero sv-hero">
+      <div class="sv-top"><div class="sv-txt"><div class="lbl">${ic('piggy')} סך החיסכון${scopeTxt}</div>
+        <div class="big num gold-text">${fmt(T.saved)}</div>
+        <div class="sub">${T.count} ${T.count === 1 ? 'יעד' : 'יעדים'} · ${Math.round(T.pct * 100)}% מתוך ${fmtR(T.target)}${T.done ? ` · ${T.done} הושגו 🎉` : ''}</div></div>
+        ${ring(T.pct, '#d4af6a', { size: 104, stroke: 10, done: T.done === T.count, inner: `<span class="ri-pc big2 num">${Math.round(T.pct * 100)}%</span>` })}</div>
+      <div class="stats">
+        <div class="stat in"><span>הופקד ב${monthShort(S.month)}</span><b class="num">${fmtR(mo.deposits)}</b></div>
+        <div class="stat out"><span>נשאר להגיע</span><b class="num">${fmtR(T.remaining)}</b></div>
+        <div class="stat plan"><span>נדרש בחודש</span><b class="num">${T.needed ? fmtR(T.needed) : '—'}</b></div>
+      </div>
+      ${mo.withdrawals ? `<div class="daily">${ic('minus')}<span>נמשכו החודש <b class="num">${fmtR(mo.withdrawals)}</b></span></div>` : ''}
+      ${mo.plannedAmount ? `<div class="daily">${ic('repeat')}<span>עוד <b class="num">${fmtR(mo.plannedAmount)}</b> יופקדו אוטומטית החודש ומופחתים מהיתרה שלך</span></div>` : ''}
+      <div class="btn-row" style="margin-top:14px"><button class="btn gold" id="svAddEntry">${ic('plus')} הפקדה / משיכה</button><button class="btn" id="svAddGoal">${ic('target')} יעד חדש</button></div>
+    </div>
+    <div class="card"><h3>${ic('bulb')} טיפים לפי הנתונים שלך</h3>${tips.map(tipHTML).join('')}</div>
+    <div class="span2"><div class="goals">${order.map(goalCard).join('')}</div></div>
+    <div class="card span2"><h3>${ic('list')} תנועות חיסכון<span class="sp"></span><span class="muted small">הפקדות הן הקצאה, לא הוצאה</span></h3>
+      <div class="chips" style="margin-bottom:10px">${chip('all', 'כל היעדים')}${S.goals.filter(g => ids.has(g.id)).map(g => chip(g.id, `${esc(g.icon)} ${esc(g.name)}`)).join('')}</div>
+      ${[...planned.filter(p => gsel === 'all' || p.goal_id === gsel), ...shown].map(entryRow).join('') || '<div class="empty">אין עדיין הפקדות. לחץ על "הפקדה / משיכה".</div>'}
+      ${acts.length > shown.length ? `<div class="dim small" style="margin-top:6px">מוצגות ${shown.length} התנועות האחרונות מתוך ${acts.length}</div>` : ''}</div>
+  </div>`;
+}
+
+const numIn = v => +String(v).replace(/[^\d.]/g, '') || 0;
+function openGoalForm(g = null, preset = {}) {
+  const isNew = !g;
+  g = g ? { ...g } : { icon: '🎯', color: '#d4af6a', scope: S.scope === 'all' ? null : S.scope, ...preset };
+  let icon = g.icon, color = g.color, scopeSel = g.scope || '';
+  const today = M.todayStr(), saved0 = isNew ? 0 : SV.goalSaved(g, S.sentries), nEntries = isNew ? 0 : S.sentries.filter(e => e.goal_id === g.id).length;
+  const autoOn = +g.auto_amount > 0;
+  sheet(`<h2>${ic('piggy')} ${isNew ? 'יעד חיסכון חדש' : 'עריכת יעד'}<span class="sp"></span><button class="icon-btn" data-close>${ic('x')}</button></h2>
+    <div class="field"><label>שם היעד</label><input class="inp" id="gName" maxlength="60" value="${esc(g.name || '')}" placeholder="למשל: חופשה, קרן חירום, מצלמה חדשה" autocomplete="off"></div>
+    <div class="field"><label>סמל וצבע</label><div class="icon-grid" id="gIcons"></div><div class="swatches" id="gColors"></div></div>
+    <div class="field"><label>סכום היעד</label><div class="amount-box"><span>₪</span><input id="gTarget" inputmode="decimal" placeholder="0" value="${g.target_amount ?? ''}" autocomplete="off"></div></div>
+    <div class="two-col"><div class="field"><label>תאריך יעד (לא חובה)</label><input class="inp" type="date" id="gDate" value="${g.target_date || ''}"></div>
+      <div class="field"><label>תיוג</label><div class="seg" id="gScope" style="height:48px"><button data-s="" style="flex:1">כללי</button><button data-s="business" style="flex:1">עסקי</button><button data-s="personal" style="flex:1">פרטי</button></div></div></div>
+    <div id="gNeed" class="need hidden"></div>
+    ${isNew ? '<div class="field"><label>כבר חסכת עד היום? (לא חובה)</label><input class="inp" id="gOpen" inputmode="decimal" placeholder="סכום פתיחה, יירשם כהפקדה" autocomplete="off"></div>' : `<p class="small muted" style="margin-bottom:10px">נחסך עד עכשיו: <b class="num" style="color:var(--text)">${fmt(saved0)}</b></p>`}
+    <label class="rec-toggle" for="gAuto"><span class="rt-txt"><b>${ic('repeat')} הפקדה חודשית אוטומטית</b><span class="dim small" id="gAutoHint"></span></span><input type="checkbox" id="gAuto" class="sw-input" ${autoOn ? 'checked' : ''}><span class="switch-ui" aria-hidden="true"></span></label>
+    <div class="two-col hidden" id="gAutoBox"><div class="field"><label>סכום בכל חודש</label><input class="inp" id="gAutoAmt" inputmode="decimal" value="${autoOn ? g.auto_amount : ''}" placeholder="0"></div>
+      <div class="field"><label>יום בחודש</label><input class="inp" id="gAutoDay" type="number" min="1" max="31" value="${g.auto_day || 1}"></div></div>
+    <div class="sheet-actions">${!isNew ? `<button class="btn danger" id="gDel" aria-label="מחיקת יעד">${ic('trash')}</button>` : ''}<button class="btn gold" id="gSave">שמירה</button></div>`);
+  const drawPick = () => {
+    $('#gIcons').innerHTML = SV.GOAL_ICONS.map(i => `<button type="button" data-i="${i}" class="${i === icon ? 'on' : ''}">${i}</button>`).join('');
+    $('#gColors').innerHTML = SV.GOAL_COLORS.map(c => `<button type="button" data-c="${c}" class="${c === color ? 'on' : ''}" style="--c:${c}" aria-label="צבע"></button>`).join('');
+    $$('#gScope button').forEach(b => b.classList.toggle('on', b.dataset.s === scopeSel));
+  };
+  drawPick();
+  $('#gIcons').onclick = e => { const b = e.target.closest('[data-i]'); if (b) { icon = b.dataset.i; drawPick(); } };
+  $('#gColors').onclick = e => { const b = e.target.closest('[data-c]'); if (b) { color = b.dataset.c; drawPick(); } };
+  $('#gScope').onclick = e => { const b = e.target.closest('[data-s]'); if (b) { scopeSel = b.dataset.s; drawPick(); } };
+  const firstAuto = () => { const d = Math.min(31, Math.max(1, +$('#gAutoDay').value || 1)); const cur = M.monthKey(today); return M.monthKey(g.auto_start || '') && !isNew && autoOn ? g.auto_start : (d > +today.slice(8, 10) ? cur : M.addMonths(cur, 1)) + '-01'; };
+  const hints = () => {
+    const on = $('#gAuto').checked; $('#gAutoBox').classList.toggle('hidden', !on);
+    $('#gAutoHint').textContent = on ? `ההפקדה הראשונה: ${M.occurrenceDate({ day_of_month: +$('#gAutoDay').value || 1 }, firstAuto().slice(0, 7)).split('-').reverse().join('.')}` : 'כבוי: מפקידים ידנית';
+    const target = numIn($('#gTarget').value), date = $('#gDate').value, open = isNew ? numIn($('#gOpen')?.value) : saved0, box = $('#gNeed');
+    if (target > 0 && date && date >= today) {
+      const n = Math.max(1, SV.monthsBetween(M.monthKey(today), date.slice(0, 7)) + 1), need = Math.max(0, Math.ceil((target - open) / n));
+      box.classList.remove('hidden'); box.innerHTML = need ? `${ic('target')}<span>כדי להגיע ליעד עד ${monthName(date.slice(0, 7))} צריך להפקיד כ-<b class="num">${fmtR(need)}</b> בחודש (${n} חודשים)</span><button type="button" class="btn sm" id="gUseNeed">שימוש בסכום</button>` : `${ic('target')}<span>הסכום כבר מכסה את היעד</span>`;
+      const u = $('#gUseNeed'); if (u) u.onclick = () => { $('#gAuto').checked = true; $('#gAutoAmt').value = need; hints(); };
+    } else box.classList.add('hidden');
+  };
+  ['#gAuto', '#gAutoDay', '#gTarget', '#gDate', '#gOpen'].forEach(sel => { const el = $(sel); if (el) { el.oninput = hints; el.onchange = hints; } }); hints();
+  if (isNew) setTimeout(() => $('#gName')?.focus(), 250);
+  if (!isNew) $('#gDel').onclick = async () => {
+    const k = await ask(`למחוק את היעד "${g.name}"?`, nEntries ? `גם ${nEntries} ההפקדות והמשיכות שלו יימחקו. אי אפשר לבטל.` : 'אי אפשר לבטל את הפעולה.', [{ k: 'del', label: 'מחיקה', cls: 'danger' }]);
+    if (k !== 'del') return;
+    try { await S.store.deleteGoal(g.id); S.goals = S.goals.filter(x => x.id !== g.id); S.sentries = S.sentries.filter(x => x.goal_id !== g.id); closeSheet(); toast(savedToast('היעד נמחק ✓')); render(); }
+    catch (e) { toast(errMsg(e), 5000); }
+  };
+  $('#gSave').onclick = async () => {
+    const name = $('#gName').value.trim(), target = numIn($('#gTarget').value), date = $('#gDate').value || null, on = $('#gAuto').checked, amt = numIn($('#gAutoAmt').value);
+    if (!name) return toast('הזן שם ליעד'); if (!(target > 0)) return toast('הזן סכום יעד');
+    if (date && date < today && (isNew || date !== g.target_date)) return toast('תאריך היעד כבר עבר');
+    if (on && !(amt > 0)) return toast('הזן סכום להפקדה החודשית');
+    const btn = $('#gSave'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
+    const row = { ...g, id: g.id || uuid(), name, icon, color, target_amount: M.round2(target), target_date: date, scope: scopeSel || null,
+      auto_amount: on ? M.round2(amt) : null, auto_day: Math.min(31, Math.max(1, +$('#gAutoDay').value || 1)), auto_start: on ? firstAuto() : null, auto_skip: g.auto_skip || [] };
+    try {
+      const savedRow = await S.store.saveGoal(row);
+      S.goals = [...S.goals.filter(x => x.id !== savedRow.id), { ...savedRow }].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      const open = isNew ? numIn($('#gOpen')?.value) : 0;
+      if (open > 0) { const en = await S.store.saveSavingsEntry({ id: uuid(), goal_id: savedRow.id, kind: 'deposit', amount: M.round2(open), date: today, notes: 'יתרת פתיחה' }); S.sentries = sortEntries([en, ...S.sentries]); }
+      await runSavingsAuto();
+      closeSheet(); toast(savedToast(isNew ? 'היעד נוצר ✓' : 'היעד עודכן ✓')); render();
+    } catch (e) { btn.disabled = false; btn.textContent = 'שמירה'; toast(errMsg(e), 5000); }
+  };
+}
+
+function openEntryForm(e = null, preset = {}) {
+  if (!S.goals.length) return openGoalForm();
+  const isNew = !e;
+  const pick0 = (S.goals.find(g => SV.inScope(g, S.scope) && !SV.goalStats(g, S.sentries).done) || S.goals[0]).id;
+  e = e ? { ...e } : { kind: 'deposit', date: M.todayStr(), goal_id: preset.goal_id || pick0, ...preset };
+  const orig = e.id ? { ...e } : null, auto = !!e.auto_date;
+  sheet(`<h2>${ic('piggy')} ${isNew ? 'הפקדה / משיכה' : 'עריכת תנועת חיסכון'}<span class="sp"></span><button class="icon-btn" data-close>${ic('x')}</button></h2>
+    <div class="kind-seg" id="eKind"><button data-k="deposit" class="${e.kind === 'deposit' ? 'on' : ''}">הפקדה</button><button data-k="withdrawal" class="${e.kind === 'withdrawal' ? 'on' : ''}">משיכה</button></div>
+    <div class="amount-box"><span>₪</span><input id="eAmt" inputmode="decimal" placeholder="0" value="${e.amount ?? ''}" autocomplete="off"></div>
+    <div class="field"><label>יעד</label><div class="cat-pick" id="eGoals"></div><div class="small dim" id="eBal" style="margin-top:6px"></div></div>
+    <div class="two-col"><div class="field"><label>תאריך</label><input class="inp" type="date" id="eDate" value="${e.date}"></div>
+      <div class="field"><label>הערה (לא חובה)</label><input class="inp" id="eNote" maxlength="200" value="${esc(e.notes || '')}" placeholder="למשל: בונוס מלקוח"></div></div>
+    ${auto ? '<p class="small dim" style="margin-top:-4px">זו הפקדה חודשית אוטומטית. אפשר לשנות סכום ותאריך רק להפקדה הזאת.</p>' : ''}
+    <div class="sheet-actions">${!isNew ? `<button class="btn danger" id="eDel" aria-label="מחיקה">${ic('trash')}</button>` : ''}<button class="btn gold" id="eSave">שמירה</button></div>`);
+  const balAfter = (goalId, mut = {}) => { const list = S.sentries.filter(x => x.id !== (e.id || mut.skip)); if (mut.add) list.push(mut.add); return SV.goalSaved({ id: goalId }, list); };
+  const draw = () => {
+    $('#eGoals').innerHTML = S.goals.map(g => `<button data-g="${g.id}" class="${e.goal_id === g.id ? 'on' : ''}" style="--c:${esc(g.color)}">${esc(g.icon)} ${esc(g.name)}</button>`).join('');
+    $$('#eKind button').forEach(b => b.classList.toggle('on', b.dataset.k === e.kind));
+    $('#eBal').textContent = `יתרה ביעד: ${fmt(balAfter(e.goal_id))}`;
+  };
+  draw();
+  $('#eKind').onclick = ev => { const b = ev.target.closest('[data-k]'); if (b) { e.kind = b.dataset.k; draw(); } };
+  $('#eGoals').onclick = ev => { const b = ev.target.closest('[data-g]'); if (b) { e.goal_id = b.dataset.g; draw(); } };
+  if (isNew) setTimeout(() => $('#eAmt')?.focus(), 250);
+  $('#eSave').onclick = async () => {
+    const amount = numIn($('#eAmt').value); if (!(amount > 0)) return toast('הזן סכום'); if (!$('#eDate').value) return toast('בחר תאריך');
+    const next = { ...e, amount: M.round2(amount), date: $('#eDate').value, notes: $('#eNote').value.trim() || null };
+    const need = [next.goal_id, ...(orig && orig.goal_id !== next.goal_id ? [orig.goal_id] : [])];
+    for (const gid of need) { const bal = gid === next.goal_id ? balAfter(gid, { add: { ...next, id: e.id || 'new' } }) : balAfter(gid); if (bal < -0.005) return toast(next.kind === 'withdrawal' && gid === next.goal_id ? `אפשר למשוך עד ${fmt(Math.max(0, balAfter(gid)))}` : 'היתרה ביעד לא יכולה להיות שלילית'); }
+    const btn = $('#eSave'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
+    try {
+      if (!next.id) next.id = uuid();
+      const savedRow = await S.store.saveSavingsEntry(next);
+      S.sentries = sortEntries([savedRow, ...S.sentries.filter(x => x.id !== savedRow.id)]);
+      closeSheet(); toast(savedToast(isNew ? (next.kind === 'deposit' ? 'ההפקדה נרשמה ✓' : 'המשיכה נרשמה ✓') : 'נשמר ✓')); render();
+    } catch (er) { btn.disabled = false; btn.textContent = 'שמירה'; toast(errMsg(er), 5000); }
+  };
+  if (!isNew) $('#eDel').onclick = async () => {
+    if (balAfter(e.goal_id, { skip: e.id, add: null }) < -0.005 && e.kind === 'deposit') return toast('אי אפשר למחוק: היתרה ביעד תהיה שלילית. מחק קודם את המשיכות');
+    const k = await ask('למחוק את התנועה?', auto ? 'ההפקדה האוטומטית של החודש הזה לא תתווסף שוב. ההפקדות הבאות ימשיכו כרגיל.' : 'אי אפשר לבטל את הפעולה.', [{ k: 'del', label: 'מחיקה', cls: 'danger' }]);
+    if (k !== 'del') return;
+    try {
+      const g = goalOf(e.goal_id);
+      if (auto && g) { const sg = await S.store.saveGoal({ ...g, auto_skip: [...new Set([...(g.auto_skip || []), M.monthKey(e.auto_date)])] }); S.goals = S.goals.map(x => x.id === sg.id ? { ...x, ...sg } : x); }
+      await S.store.deleteSavingsEntry(e.id); S.sentries = S.sentries.filter(x => x.id !== e.id); closeSheet(); toast(savedToast('נמחק ✓')); render();
+    } catch (er) { toast(errMsg(er), 5000); }
+  };
+}
+
 // ---------------------------------------------------------------- recurring
 function viewRecurring() {
   const act = S.recurring.filter(r => r.active), mon = k => act.filter(r => r.kind === k).reduce((a, r) => a + +r.amount, 0);
@@ -403,7 +628,7 @@ function reportSelection() {
   list = M.filterTx(list, { from, to, scope: sc }, S.cats);
   const scopeLbl = { business: 'עסקי', personal: 'פרטי', all: 'עסקי ופרטי' }[sc];
   const name = `דוח-${scopeLbl}-${p === 'year' ? y : p === 'all' ? 'הכל' : S.month}`.replace(/\s+/g, '-');
-  return { list, period: `${period} · ${scopeLbl}`, name, periodKey: p, scope: sc };
+  return { list, period: `${period} · ${scopeLbl}`, name, periodKey: p, scope: sc, from, to };
 }
 
 // ---------------------------------------------------------------- tx form
@@ -608,8 +833,10 @@ function openCategories() {
   bind();
 }
 async function loadSample() {
-  const { cats, txs, recurring } = sampleData(S.cats, M.todayStr());
+  const { cats, txs, recurring, goals, sentries } = sampleData(S.cats, M.todayStr());
   for (const c of cats) await S.store.saveCategory(c);
+  for (const g of goals || []) await S.store.saveGoal(g);
+  for (const e of sentries || []) await S.store.saveSavingsEntry(e);
   for (const r of recurring) await S.store.saveRecurring(r);
   for (const t of txs) await S.store.saveTransaction(t);
   await loadAll(); await runRecurring();
@@ -660,18 +887,28 @@ function bindView() {
     $$('[data-f]').forEach(b => b.onclick = () => { S.filters[b.dataset.f] = b.dataset.v; render(); });
     $('#fCat').onchange = e => { S.filters.cat = e.target.value; render(); };
   }
+  $('#svAddGoal') && ($('#svAddGoal').onclick = () => openGoalForm());
+  $('#svAddEntry') && ($('#svAddEntry').onclick = () => openEntryForm());
+  $$('[data-tpl]').forEach(b => b.onclick = () => openGoalForm(null, SV.GOAL_TEMPLATES[+b.dataset.tpl]));
+  $$('[data-gedit]').forEach(b => b.onclick = () => openGoalForm(goalOf(b.dataset.gedit)));
+  $$('[data-goal]').forEach(c => c.onclick = ev => { if (!ev.target.closest('button')) openGoalForm(goalOf(c.dataset.goal)); });
+  $$('[data-sdep]').forEach(b => b.onclick = () => openEntryForm(null, { goal_id: b.dataset.sdep, kind: 'deposit' }));
+  $$('[data-swd]').forEach(b => b.onclick = () => openEntryForm(null, { goal_id: b.dataset.swd, kind: 'withdrawal' }));
+  $$('[data-svf]').forEach(b => b.onclick = () => { S.svGoal = b.dataset.svf; render(); });
+  $$('[data-sent]').forEach(b => b.onclick = () => { const e = S.sentries.find(x => x.id === b.dataset.sent); if (e) return openEntryForm(e); const g = goalOf(b.dataset.sent.split('-').slice(1, 6).join('-')); if (g) openGoalForm(g); });
   $('#editBudgets') && ($('#editBudgets').onclick = openBudgetEditor);
   $('#addRec') && ($('#addRec').onclick = () => openRecForm());
   $$('[data-rec]').forEach(el => el.onclick = () => openRecForm(S.recurring.find(r => r.id === el.dataset.rec)));
   $$('[data-toggle]').forEach(b => b.onclick = async () => { const r = S.recurring.find(x => x.id === b.dataset.toggle); try { Object.assign(r, await S.store.saveRecurring({ ...r, active: !r.active })); if (r.active) await runRecurring(); render(); } catch (e) { toast(errMsg(e)); } });
   $$('[data-rp]').forEach(b => b.onclick = async () => {
-    const { list, period, name } = reportSelection(); const msg = $('#rpMsg');
-    if (!list.length) return msg.textContent = 'אין תנועות בתקופה שנבחרה';
+    const sel0 = reportSelection(), { list, period, name } = sel0; const msg = $('#rpMsg');
+    const savOnly = b.dataset.rp === 'pdf' && SV.entriesInRange(S.goals, S.sentries, { from: sel0.from, to: sel0.to, scope: sel0.scope }).length;
+    if (!list.length && !savOnly) return msg.textContent = 'אין תנועות בתקופה שנבחרה';
     msg.innerHTML = '<span class="spin"></span> מכין…';
     try {
       const k = b.dataset.rp;
       if (k === 'csv') exportCSV(list, S.cats, name);
-      if (k === 'xlsx') await exportXLSX(list, S.cats, name);
+      if (k === 'xlsx') await exportXLSX(list, S.cats, name, savingsFor(sel0));
       if (k === 'zip') await exportReceiptsZip(list, S.store, name, (i, n) => msg.textContent = `מוריד קבלות ${i}/${n}…`);
       if (k === 'pdf') { msg.textContent = ''; return openReportViewer(reportSelection(), name); }
       msg.textContent = `מוכן ✓ (${list.length} תנועות)`;
@@ -709,7 +946,7 @@ async function openReportViewer(sel, name) {
     st('מעצב את העמודים…');
     if (document.fonts?.load) await Promise.all(['400 14px Heebo', '600 14px Heebo', '700 14px Heebo', '800 14px Heebo'].map(f => document.fonts.load(f, 'אבג abc 123').catch(() => {})));
     await document.fonts?.ready;
-    const pages = await buildReport({ host: build, list: sel.list, cats: S.cats, fmt, business: S.settings.businessName || 'Studio Image', owner: S.store.mode === 'cloud' ? S.user.email : '', info, turnovers, receipts, includeReceipts: inclRc });
+    const pages = await buildReport({ host: build, list: sel.list, cats: S.cats, fmt, business: S.settings.businessName || 'Studio Image', owner: S.store.mode === 'cloud' ? S.user.email : '', info, turnovers, receipts, includeReceipts: inclRc, savings: savingsFor(sel) });
     const box = $('#rvPages', ov); box.innerHTML = '';
     const imgs = await renderPages(pages, { scale: isMobile() ? 1.8 : 2, onPage: (pg, i, n) => { urls.push(pg.url); st(`מצייר עמוד ${i + 1} מתוך ${n}…`); const im = new Image(); im.src = pg.url; im.alt = `עמוד ${i + 1} מתוך ${n}`; im.className = 'rv-pg'; box.appendChild(im); } });
     build.remove();

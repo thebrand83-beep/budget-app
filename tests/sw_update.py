@@ -21,14 +21,14 @@ async def main():
             await pg.goto(url); await pg.evaluate("navigator.serviceWorker.ready.then(()=>1)")
             await pg.reload(); await pg.wait_for_timeout(1500)
             before = await pg.evaluate("(async()=>({ctl:!!navigator.serviceWorker.controller, keys: await caches.keys(), v: document.querySelector('meta[name=app-version]').content}))()")
-            # deploy "v5"
-            (d / 'sw.js').write_text((d / 'sw.js').read_text().replace("'budget-v4'", "'budget-v5test'"))
-            (d / 'index.html').write_text((d / 'index.html').read_text().replace('name="app-version" content="4"', 'name="app-version" content="5"'))
+            # deploy "v6"
+            (d / 'sw.js').write_text((d / 'sw.js').read_text().replace("'budget-v5'", "'budget-v6test'"))
+            (d / 'index.html').write_text((d / 'index.html').read_text().replace('name="app-version" content="5"', 'name="app-version" content="6"'))
             async with pg.expect_navigation(timeout=30000):
                 await pg.evaluate("dispatchEvent(new Event('focus'))")
             await pg.wait_for_timeout(2000)
             after = await pg.evaluate("(async()=>({ctl:!!navigator.serviceWorker.controller, keys: await caches.keys(), v: document.querySelector('meta[name=app-version]').content}))()")
-            ok = before['ctl'] and before['v'] == '4' and after['v'] == '5' and after['keys'] == ['budget-v5test']
+            ok = before['ctl'] and before['v'] == '5' and after['v'] == '6' and after['keys'] == ['budget-v6test']
             print('before', before, 'after', after)
             await b.close()
     finally:

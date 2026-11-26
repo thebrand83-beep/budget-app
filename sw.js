@@ -1,6 +1,6 @@
 // App-shell service worker. Never caches Supabase or Gemini traffic (auth + private data).
-const V = 'budget-v4';
-const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/config.js', 'js/store.js', 'js/model.js', 'js/charts.js', 'js/tips.js', 'js/export.js', 'js/defaults.js', 'js/report.js', 'js/pdf.js', 'js/vendor/html2canvas-pro.min.js', 'css/report.css', 'manifest.webmanifest', 'assets/icon.svg', 'assets/icon-192.png'];
+const V = 'budget-v5';
+const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/config.js', 'js/store.js', 'js/model.js', 'js/charts.js', 'js/tips.js', 'js/export.js', 'js/defaults.js', 'js/report.js', 'js/savings.js', 'js/pdf.js', 'js/vendor/html2canvas-pro.min.js', 'css/report.css', 'manifest.webmanifest', 'assets/icon.svg', 'assets/icon-192.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== V).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', e => {

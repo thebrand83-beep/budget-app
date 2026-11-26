@@ -2,6 +2,7 @@
 // The pages are rendered to images (pdf.js) and shown in the in-app report viewer, so the same look appears on
 // every device and the PDF never depends on the browser's print dialog.
 import { byCategory, round2, monthKey, monthRange } from './model.js';
+import { goalStats, entriesInRange, inScope } from './savings.js';
 
 export const PAGE_W = 794, PAGE_H = 1123;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -27,7 +28,7 @@ export function describe({ periodKey, month, scope, list, today }) {
 }
 
 export async function buildReport(o) {
-  const { host, list, cats, fmt, business = 'Studio Image', owner = '', recMap = new Set(), turnovers = [], receipts = new Map(), includeReceipts, info } = o;
+  const { host, list, cats, fmt, business = 'Studio Image', owner = '', recMap = new Set(), turnovers = [], receipts = new Map(), includeReceipts, info, savings = null } = o;
   // plain "1,234.50 ₪" in an LTR island, so the minus/plus sign and the shekel sign never jump around in RTL text
   const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 0 });
   const money = (v, sign = '') => `<bdi class="mn">${sign}${nf.format(Math.abs(+v || 0) < 0.005 ? 0 : (sign ? Math.abs(+v) : +v))}&nbsp;₪</bdi>`;
@@ -146,6 +147,45 @@ export async function buildReport(o) {
         <div class="nums"><div><small>מחזור מצטבר</small><b>${money(t.ytd)}</b></div><div><small>תקרה שנתית</small><b>${money(t.ceiling)}</b></div><div><small>${t.left >= 0 ? 'נותר עד התקרה' : 'חריגה'}</small><b>${money(Math.abs(t.left))}</b></div><div><small>ניצול</small><b>${(t.pct * 100).toFixed(0)}%</b></div></div></div>`;
     }).join('');
     sec(`<h2>מעקב מחזור – עוסק פטור</h2>${cards}<p class="rp-note">מחזור = סך ההכנסות העסקיות מתחילת השנה, לפני הוצאות. התקרה ניתנת לעדכון בהגדרות האפליקציה.</p>`);
+  }
+
+  // ---- 6b. savings (goals + deposits / withdrawals in the period). Allocations, never counted as expenses above.
+  if (savings && savings.goals.some(g => inScope(g, info.scope))) {
+    const { goals, entries, from = '', to = '', today } = savings;
+    const upTo = to && to < today ? to : today;
+    const gs = goals.filter(g => inScope(g, info.scope));
+    const stats = gs.map(g => goalStats(g, entries.filter(e => e.date <= upTo), upTo));
+    const inP = entriesInRange(goals, entries, { from, to, scope: info.scope }).sort((a, b) => a.date.localeCompare(b.date) || (a.created_at || '').localeCompare(b.created_at || ''));
+    const dep = round2(inP.filter(e => e.kind === 'deposit').reduce((a, e) => a + +e.amount, 0)), wd = round2(inP.filter(e => e.kind === 'withdrawal').reduce((a, e) => a + +e.amount, 0));
+    const saved = round2(stats.reduce((a, x) => a + x.saved, 0)), target = round2(stats.reduce((a, x) => a + x.target, 0)), remaining = round2(stats.reduce((a, x) => a + x.remaining, 0));
+    const tagBd = g => g.scope ? `<span class="bd ${g.scope === 'business' ? 'biz' : 'prv'}">${g.scope === 'business' ? 'עסקי' : 'פרטי'}</span>` : '';
+    const ST = { done: ['הושג', 'ok'], ontrack: ['בקצב', 'ok'], behind: ['מאחור', 'mid'], overdue: ['עבר התאריך', 'over'], start: ['להתחיל', 'mid'], open: ['בדרך', 'ok'] };
+    sec(`<h2>חיסכון</h2><div class="rp-kpis sav">
+        <div class="kpi sv"><span>נחסך עד ${upTo === today ? 'היום' : dmy(upTo)}</span><b>${money(saved)}</b><i></i></div>
+        <div class="kpi inc"><span>הופקד בתקופה</span><b>${money(dep)}</b><i></i></div>
+        <div class="kpi wd"><span>נמשך בתקופה</span><b>${money(wd)}</b><i></i></div></div>
+      <p class="rp-note">הפקדות לחיסכון הן הקצאה מתוך ההכנסה ולא הוצאה: הן אינן נכללות בסך ההוצאות ובגרפים שלמעלה. מתוך סך יעדים של ${money(target)} נותרו ${money(remaining)}.</p>`);
+    const gt = table('מטרות חיסכון', '<tr><th>יעד</th><th>תאריך יעד</th><th class="share">התקדמות</th><th class="n">נחסך</th><th class="n">סכום יעד</th><th class="n">נדרש בחודש</th><th class="c">מצב</th></tr>', 'rp-goals');
+    for (const x of stats) {
+      const g = x.goal, p = Math.round(x.pct * 100), [lbl, cls] = ST[x.status];
+      gt.row(`<td class="ti"><b><i class="dot" style="background:${esc(g.color)}"></i>${esc(g.name)}</b> ${tagBd(g)}${+g.auto_amount > 0 ? '<span class="bd rec">↻ אוטומטי</span>' : ''}</td>
+        <td class="d">${g.target_date ? dmy(g.target_date) : '<span class="mut">ללא</span>'}</td>
+        <td class="share"><div class="pb"><div style="width:${p}%;background:${esc(g.color)}"></div></div><em>${p}%</em></td>
+        <td class="n"><b>${money(x.saved)}</b></td><td class="n">${money(x.target)}</td>
+        <td class="n">${x.needed ? money(x.needed) : '<span class="mut">—</span>'}</td><td class="c"><span class="bd sv-${cls}">${lbl}</span></td>`);
+    }
+    gt.end(`<td colspan="3"><b>סה״כ</b></td><td class="n"><b>${money(saved)}</b></td><td class="n"><b>${money(target)}</b></td><td colspan="2"></td>`);
+    if (inP.length) {
+      const goalOf = id => goals.find(g => g.id === id);
+      const et = table('תנועות חיסכון בתקופה', '<tr><th class="d">תאריך</th><th>יעד</th><th class="c">סוג</th><th>הערה</th><th class="n">סכום</th></tr>', 'rp-sentries', `${inP.length} תנועות`);
+      for (const e of inP) {
+        const g = goalOf(e.goal_id);
+        et.row(`<td class="d">${dmy(e.date)}</td><td><i class="dot" style="background:${esc(g?.color || '#999')}"></i>${esc(g?.name || '')}</td>
+          <td class="c"><span class="bd ${e.kind === 'deposit' ? 'sv-ok' : 'sv-over'}">${e.kind === 'deposit' ? 'הפקדה' : 'משיכה'}</span>${e.auto_date ? '<span class="bd rec">↻</span>' : ''}</td>
+          <td>${esc((e.notes || '').slice(0, 80))}</td><td class="n ${e.kind === 'deposit' ? 'pos' : 'neg'}">${money(e.amount, e.kind === 'deposit' ? '+' : '−')}</td>`);
+      }
+      et.end(`<td colspan="4"><b>נטו בתקופה</b></td><td class="n ${dep - wd < 0 ? 'neg' : 'pos'}"><b>${money(dep - wd)}</b></td>`);
+    }
   }
 
   // ---- 7. transactions

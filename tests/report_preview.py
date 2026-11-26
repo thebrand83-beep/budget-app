@@ -8,6 +8,7 @@ PERIODS = {'month': 'חודש', 'bimonth': 'חודשיים', 'year': 'שנה', '
 SEED = """async (big) => { const S = window.__budget; const { sampleData } = await import('./js/defaults.js');
   const d = sampleData(S.cats, new Date().toISOString().slice(0, 10));
   for (const r of d.recurring) await S.store.saveRecurring(r);
+  for (const g of d.goals) await S.store.saveGoal(g); for (const e of d.sentries) await S.store.saveSavingsEntry(e);
   const bizExp = d.txs.filter(t => t.kind === 'expense' && t.scope === 'business').slice(0, 7);
   const files = [['tests/fixtures/receipt-photo.jpg', 'receipt-photo.jpg', 'image/jpeg'], ['tests/fixtures/receipt.pdf', 'receipt.pdf', 'application/pdf']];
   for (const [i, t] of bizExp.entries()) { const [u, n, ty] = files[i % 3 === 2 ? 1 : 0]; const b = await (await fetch(u)).blob(); Object.assign(t, await S.store.uploadReceipt(t.id, new File([b], n, { type: ty }))); }

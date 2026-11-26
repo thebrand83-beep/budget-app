@@ -53,5 +53,21 @@ export function sampleData(cats, today) {
   // budgets on a few categories
   const budgets = { 'מזון וסופר': 2200, 'בילויים ומסעדות': 600, 'שיווק ופרסום': 1200, 'רכב ודלק': 700, 'ציוד צילום': 1000 };
   const catsOut = cats.filter(c => c.name in budgets).map(c => ({ ...c, monthly_budget: budgets[c.name] }));
-  return { cats: catsOut, txs, recurring };
+  // savings goals + their history (deposits are allocations, not expenses)
+  const goals = [], sentries = [];
+  const goal = (g) => { const o = { id: uuid(), auto_day: 1, auto_skip: [], ...g }; goals.push(o); return o; };
+  const ent = (g, kind, amount, date, notes, auto = false) => { if (date <= today) sentries.push({ id: uuid(), goal_id: g.id, kind, amount, date, notes, ...(auto ? { auto_date: date } : {}) }); };
+  const day = (k, n) => `${k}-${pad(n)}`;
+  const em = goal({ name: 'קרן חירום', icon: '🛡️', color: '#5fd39a', target_amount: 30000, scope: 'personal', auto_amount: 1500, auto_day: 1, auto_start: addMonths(cur, -5) + '-01' });
+  ent(em, 'deposit', 3000, day(addMonths(cur, -5), 1), 'יתרת פתיחה');
+  for (let i = 5; i >= 0; i--) ent(em, 'deposit', 1500, day(addMonths(cur, -i), 1), 'הפקדה חודשית אוטומטית', true);
+  const vac = goal({ name: 'חופשה ביוון', icon: '🏝️', color: '#4fd1d9', target_amount: 14000, target_date: day(addMonths(cur, 5), 15), scope: 'personal' });
+  [[4, 800], [3, 1200], [2, 1000], [1, 700]].forEach(([i, a2]) => ent(vac, 'deposit', a2, day(addMonths(cur, -i), 6), i === 3 ? 'בונוס מצילומי בר מצווה' : null));
+  ent(vac, 'withdrawal', 400, day(addMonths(cur, -2), 20), 'מקדמה למלון');
+  ent(vac, 'deposit', 900, day(cur, 3), 'הפקדה ידנית');
+  const cam = goal({ name: 'מצלמה חדשה לסטודיו', icon: '📷', color: '#7aa7ff', target_amount: 18000, target_date: day(addMonths(cur, 8), 1), scope: 'business', auto_amount: 1500, auto_day: 10, auto_start: addMonths(cur, -3) + '-01' });
+  for (let i = 3; i >= 0; i--) ent(cam, 'deposit', 1500, day(addMonths(cur, -i), 10), 'הפקדה חודשית אוטומטית', true);
+  const tax = goal({ name: 'הפרשה למיסים', icon: '🏛️', color: '#a3b6c9', target_amount: 12000, scope: 'business' });
+  [[3, 1000], [2, 1500], [1, 1200]].forEach(([i, a2]) => ent(tax, 'deposit', a2, day(addMonths(cur, -i), 28), 'הפרשה מהכנסות החודש'));
+  return { cats: catsOut, txs, recurring, goals, sentries };
 }

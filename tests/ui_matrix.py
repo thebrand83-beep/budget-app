@@ -1,6 +1,6 @@
 # Cross-platform matrix against the LIVE site + real cloud (throw-away test user only).
 # Covers: login/sign-up screens, Hebrew auth errors, RTL + no horizontal overflow on every screen and sheet,
-# receipt upload (photo + PDF) and viewing via signed URL, CSV/XLSX/ZIP/PDF exports, service worker active (budget-v4), upload progress + sync status.
+# receipt upload (photo + PDF) and viewing via signed URL, CSV/XLSX/ZIP/PDF exports, service worker active (budget-v5), upload progress + sync status.
 # Sign-up submit is answered by a mocked /auth/v1/signup so no real e-mail is sent to fake addresses.
 # env: PLATFORM (chrome|firefox|webkit|iphone|android), BASE, BUDGET_TEST_EMAIL, BUDGET_TEST_PASSWORD, SHOTS (optional dir)
 import asyncio, os, sys, json, pathlib, zipfile, io
@@ -40,7 +40,7 @@ async def main():
 
         # ---- auth screens
         await pg.goto(BASE); await pg.wait_for_selector('#loginF', timeout=30000); await pg.wait_for_timeout(600)
-        check(await pg.evaluate("document.querySelector('meta[name=app-version]').content") == '4', 'serves version 4')
+        check(await pg.evaluate("document.querySelector('meta[name=app-version]').content") == '5', 'serves version 5')
         await no_overflow('login')
         await pg.fill('#lEmail', EMAIL); await pg.fill('#lPass', 'wrong-password-1'); await click('#lBtn')
         await pg.wait_for_selector('#lMsg .msg', timeout=20000)
@@ -67,7 +67,7 @@ async def main():
 
         # ---- service worker controls the page and uses the v2 cache
         sw = await pg.evaluate("""(async()=>{ if(!('serviceWorker' in navigator)) return 'unsupported'; const r = await navigator.serviceWorker.ready; await new Promise(r=>setTimeout(r,1500)); const keys = await caches.keys(); return { active: !!r.active, controlled: !!navigator.serviceWorker.controller, keys }; })()""")
-        check(sw != 'unsupported' and sw['active'] and sw['keys'] == ['budget-v4'], 'service worker active with cache budget-v4 only', sw)
+        check(sw != 'unsupported' and sw['active'] and sw['keys'] == ['budget-v5'], 'service worker active with cache budget-v5 only', sw)
 
         # ---- every screen: RTL and no overflow
         await no_overflow('overview')

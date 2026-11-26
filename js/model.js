@@ -56,7 +56,9 @@ export function plannedFor(recurring, txs, key, today = todayStr()) {
 
 export const byScope = (list, scope) => scope === 'all' ? list : list.filter(t => t.scope === scope);
 
-export function monthSummary(txs, recurring, key, scope = 'all', today = todayStr()) {
+/** `sav` (optional, from savings.monthAllocation): money set aside for savings goals. It is an allocation, NOT an expense:
+ *  income/expense/net/projected stay as they were; `left` = projected - net savings (deposits - withdrawals) - automatic deposits still ahead. */
+export function monthSummary(txs, recurring, key, scope = 'all', today = todayStr(), sav = null) {
   const list = byScope(txs.filter(t => monthKey(t.date) === key), scope);
   const planned = byScope(plannedFor(recurring, txs, key, today), scope);
   const sum = (l, k) => round2(l.filter(t => t.kind === k).reduce((a, t) => a + +t.amount, 0));
@@ -64,11 +66,13 @@ export function monthSummary(txs, recurring, key, scope = 'all', today = todaySt
   const plannedIncome = sum(planned, 'income'), plannedExpense = sum(planned, 'expense');
   const net = round2(income - expense);
   const projected = round2(net + plannedIncome - plannedExpense);
+  const saved = sav ? round2(sav.net) : 0, plannedSaved = sav ? round2(sav.plannedAmount) : 0;
+  const left = round2(projected - saved - plannedSaved);
   const [y, m] = key.split('-').map(Number);
   const dim = daysInMonth(y, m);
   const isCurrent = key === monthKey(today);
   const daysLeft = isCurrent ? dim - +today.slice(8, 10) + 1 : (key > monthKey(today) ? dim : 0);
-  return { key, list, planned, income, expense, net, plannedIncome, plannedExpense, projected, daysLeft, perDay: daysLeft > 0 ? Math.max(0, projected) / daysLeft : 0, isCurrent };
+  return { key, list, planned, income, expense, net, plannedIncome, plannedExpense, projected, daysLeft, saved, plannedSaved, left, perDay: daysLeft > 0 ? Math.max(0, left) / daysLeft : 0, isCurrent };
 }
 
 export function byCategory(list, cats, kind) {

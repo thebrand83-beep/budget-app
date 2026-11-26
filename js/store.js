@@ -8,6 +8,8 @@ export { uuid };
 const TX_FIELDS = ['id', 'kind', 'amount', 'date', 'category_id', 'scope', 'title', 'notes', 'payment_method', 'receipt_path', 'receipt_name', 'receipt_type', 'recurring_id'];
 const REC_FIELDS = ['id', 'kind', 'amount', 'category_id', 'scope', 'title', 'notes', 'day_of_month', 'start_month', 'end_month', 'active', 'skip_months'];
 const CAT_FIELDS = ['id', 'name', 'kind', 'color', 'icon', 'monthly_budget', 'sort', 'archived'];
+const GOAL_FIELDS = ['id', 'name', 'icon', 'color', 'target_amount', 'target_date', 'scope', 'auto_amount', 'auto_day', 'auto_start', 'auto_skip'];
+const SENT_FIELDS = ['id', 'goal_id', 'kind', 'amount', 'date', 'notes', 'auto_date'];
 const pick = (o, f) => Object.fromEntries(f.filter(k => k in o).map(k => [k, o[k] === '' ? null : o[k]]));
 const safeName = n => (n || 'receipt').normalize('NFKD').replace(/[^\w.\-]+/g, '_').slice(-80) || 'receipt';
 
@@ -59,8 +61,9 @@ function idb(name, stores) {
   const lim = p => withTimeout(p, 8000); // device storage must never block a save
   return { get: (s, k) => lim(run(s, 'readonly', st => st.get(k))), all: (s) => lim(run(s, 'readonly', st => st.getAll())), put: (s, v) => lim(run(s, 'readwrite', st => st.put(v))), del: (s, k) => k < 0 ? Promise.resolve() : lim(run(s, 'readwrite', st => st.delete(k))) };
 }
-const TABLE_FIELDS = { budget_transactions: TX_FIELDS, budget_recurring: REC_FIELDS, budget_categories: CAT_FIELDS };
-const SNAP_KEY = { budget_transactions: 'txs', budget_recurring: 'recurring', budget_categories: 'cats' };
+const TABLE_FIELDS = { budget_transactions: TX_FIELDS, budget_recurring: REC_FIELDS, budget_categories: CAT_FIELDS, budget_savings_goals: GOAL_FIELDS, budget_savings_entries: SENT_FIELDS };
+const SNAP_KEY = { budget_transactions: 'txs', budget_recurring: 'recurring', budget_categories: 'cats', budget_savings_goals: 'goals', budget_savings_entries: 'sentries' };
+const MISSING_TABLE = e => e?.code === 'PGRST205' || e?.code === '42P01' || /Could not find the table|does not exist/i.test(String(e?.message || ''));
 
 // ----------------------------------------------------------------------------- Cloud
 class CloudStore {
@@ -130,15 +133,18 @@ class CloudStore {
     }
     return out;
   }
+  /** Same as _all, but an empty list when the savings tables are not installed on this project yet (the rest of the app keeps working). */
+  async _allOpt(table, order) { try { return await this._all(table, order); } catch (e) { if (MISSING_TABLE(e)) { this.noSavings = true; return []; } throw e; } }
   /** Everything for the app in one go. Falls back to the on-device copy when the network is down. Pending (not yet
    *  synced) changes are always laid over the result, so nothing the user entered disappears on reload. */
   async loadAll() {
     let snap;
     try {
-      const [cats, txs, recurring, settings] = await Promise.all([
+      const [cats, txs, recurring, settings, goals, sentries] = await Promise.all([
         this._all('budget_categories', [['sort', true], ['name', true]]), this._all('budget_transactions', [['date', false], ['created_at', false]]),
-        this._all('budget_recurring', [['created_at', true]]), this._run(() => q(this.sb.from('budget_settings').select('data').maybeSingle())).then(d => d?.data || {})]);
-      snap = { k: this.user.id, cats, txs, recurring, settings, at: Date.now() };
+        this._all('budget_recurring', [['created_at', true]]), this._run(() => q(this.sb.from('budget_settings').select('data').maybeSingle())).then(d => d?.data || {}),
+        this._allOpt('budget_savings_goals', [['created_at', true]]), this._allOpt('budget_savings_entries', [['date', false], ['created_at', false]])]);
+      snap = { k: this.user.id, cats, txs, recurring, settings, goals, sentries, at: Date.now() };
       this.offline = false; this.db.put('snap', snap).catch(() => {});
     } catch (e) {
       if (!isTransient(e)) throw e;
@@ -146,8 +152,9 @@ class CloudStore {
       if (!snap) throw e;
       this.offline = true; this._set({ state: 'offline' });
     }
-    const out = { cats: snap.cats, txs: snap.txs, recurring: snap.recurring, settings: snap.settings };
+    const out = { cats: snap.cats, txs: snap.txs, recurring: snap.recurring, settings: snap.settings, goals: snap.goals || [], sentries: snap.sentries || [] }; // older on-device copies have no savings yet
     for (const o of this._ops) this._apply(out, o);
+    out.sentries.sort((a, b) => b.date.localeCompare(a.date) || (b.created_at || '').localeCompare(a.created_at || ''));
     out.txs.sort((a, b) => b.date.localeCompare(a.date) || (b.created_at || '').localeCompare(a.created_at || ''));
     return out;
   }
@@ -161,6 +168,12 @@ class CloudStore {
   saveTransaction(t) { return this._enqueue({ kind: 'upsert', table: 'budget_transactions', row: { ...pick(t, TX_FIELDS), created_at: t.created_at || new Date().toISOString(), amount: +t.amount } }); }
   saveRecurring(r) { return this._enqueue({ kind: 'upsert', table: 'budget_recurring', row: { active: true, skip_months: [], ...pick(r, REC_FIELDS), created_at: r.created_at || new Date().toISOString(), amount: +r.amount } }); }
   saveCategory(c) { return this._enqueue({ kind: 'upsert', table: 'budget_categories', row: { archived: false, sort: 0, ...pick(c, CAT_FIELDS) } }); }
+  saveGoal(g) { return this._enqueue({ kind: 'upsert', table: 'budget_savings_goals', row: { auto_day: 1, auto_skip: [], ...pick(g, GOAL_FIELDS), created_at: g.created_at || new Date().toISOString(), target_amount: +g.target_amount } }); }
+  saveSavingsEntry(e) { return this._enqueue({ kind: 'upsert', table: 'budget_savings_entries', row: { ...pick(e, SENT_FIELDS), created_at: e.created_at || new Date().toISOString(), amount: +e.amount } }); }
+  deleteGoal(id) { return this._enqueue({ kind: 'delete', table: 'budget_savings_goals', id }); }       // its entries go with it (ON DELETE CASCADE, mirrored locally in _apply)
+  deleteSavingsEntry(id) { return this._enqueue({ kind: 'delete', table: 'budget_savings_entries', id }); }
+  /** Automatic monthly deposits: unique per (goal, date) in the DB, so a duplicate from another device is simply ignored. */
+  async insertGeneratedSavings(list) { if (!list.length) return []; await this._enqueue({ kind: 'gensav', rows: list.map(e => ({ ...pick(e, SENT_FIELDS), created_at: new Date().toISOString() })) }); return list; }
   saveSettings(s) { return this._enqueue({ kind: 'settings', data: s }); }
   deleteCategory(id) { return this._enqueue({ kind: 'delete', table: 'budget_categories', id }); }
   deleteRecurring(id) { return this._enqueue({ kind: 'delete', table: 'budget_recurring', id }); }
@@ -186,7 +199,7 @@ class CloudStore {
   async receiptBlob(path) { const b = this._pendingBlob(path); if (b) return b; return this._run(() => q(this.sb.storage.from(CONFIG.receiptsBucket).download(path)), { ms: 95000 }); }
 
   // ---- sync status for the UI
-  isPending(id) { return this._ops.some(o => (o.kind === 'upsert' && o.row.id === id) || (o.kind === 'gen' && o.rows.some(r => r.id === id))); }
+  isPending(id) { return this._ops.some(o => (o.kind === 'upsert' && o.row.id === id) || (o.kind === 'gen' && o.rows.some(r => r.id === id)) || (o.kind === 'gensav' && o.rows.some(r => r.id === id))); }
   get status() { return { ...this._status, pending: this._ops.length, changes: this._ops.filter(o => o.kind !== 'upload' && o.kind !== 'rmfile').length || (this._ops.length ? 1 : 0), offline: this.offline }; }
   onStatus(cb) { this._listeners.add(cb); cb(this.status); return () => this._listeners.delete(cb); }
   onFailed(cb) { this._onFailed = cb; }
@@ -219,8 +232,9 @@ class CloudStore {
   }
   _apply(o, op) { // lay one pending change over a {txs,cats,recurring,settings} view
     if (op.kind === 'upsert') { const k = SNAP_KEY[op.table]; if (!o[k]) return; const old = o[k].find(x => x.id === op.row.id); o[k] = [{ ...old, ...op.row }, ...o[k].filter(x => x.id !== op.row.id)]; }
-    else if (op.kind === 'delete') { const k = SNAP_KEY[op.table]; if (o[k]) o[k] = o[k].filter(x => x.id !== op.id); }
+    else if (op.kind === 'delete') { const k = SNAP_KEY[op.table]; if (o[k]) o[k] = o[k].filter(x => x.id !== op.id); if (op.table === 'budget_savings_goals' && o.sentries) o.sentries = o.sentries.filter(x => x.goal_id !== op.id); }
     else if (op.kind === 'gen' && o.txs) { for (const r of op.rows) if (!o.txs.some(x => x.recurring_id === r.recurring_id && x.date === r.date)) o.txs = [r, ...o.txs]; }
+    else if (op.kind === 'gensav' && o.sentries) { for (const r of op.rows) if (!o.sentries.some(x => x.goal_id === r.goal_id && x.auto_date === r.auto_date)) o.sentries = [r, ...o.sentries]; }
     else if (op.kind === 'settings') o.settings = op.data;
   }
   async _snapApply(op) { const s = await this.db.get('snap', this.user.id).catch(() => null); if (!s) return; this._apply(s, op); await this.db.put('snap', s).catch(() => {}); }
@@ -278,6 +292,8 @@ class CloudStore {
       await once(() => q(this.sb.from(op.table).delete().eq('id', op.id))); // already gone = fine (idempotent)
     } else if (op.kind === 'gen') {
       await once(() => q(this.sb.from('budget_transactions').upsert(op.rows.map(t => pick(t, TX_FIELDS)), { onConflict: 'user_id,recurring_id,date', ignoreDuplicates: true })));
+    } else if (op.kind === 'gensav') {
+      await once(() => q(this.sb.from('budget_savings_entries').upsert(op.rows.map(e => pick(e, SENT_FIELDS)), { onConflict: 'user_id,goal_id,auto_date', ignoreDuplicates: true })));
     } else if (op.kind === 'settings') {
       await once(() => q(this.sb.from('budget_settings').upsert({ user_id: this.user.id, data: op.data, updated_at: new Date().toISOString() })));
     } else if (op.kind === 'rmfile') {
@@ -331,8 +347,8 @@ class LocalStore {
   user = { id: 'local', email: 'תצוגה מקדימה' };
   async init() {
     this.db = await new Promise((res, rej) => {
-      const r = indexedDB.open('budget-app', 1);
-      r.onupgradeneeded = () => { const d = r.result; for (const s of ['categories', 'transactions', 'recurring', 'kv', 'blobs']) d.createObjectStore(s, { keyPath: s === 'kv' || s === 'blobs' ? 'k' : 'id' }); };
+      const r = indexedDB.open('budget-app', 2);   // v2: savings goals + entries
+      r.onupgradeneeded = () => { const d = r.result; for (const s of ['categories', 'transactions', 'recurring', 'kv', 'blobs', 'goals', 'sentries']) if (!d.objectStoreNames.contains(s)) d.createObjectStore(s, { keyPath: s === 'kv' || s === 'blobs' ? 'k' : 'id' }); };
       r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
     });
     return this.user;
@@ -344,6 +360,13 @@ class LocalStore {
   async listCategories() { return (await this._getAll('categories')).sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name)); }
   async listTransactions() { return (await this._getAll('transactions')).sort((a, b) => b.date.localeCompare(a.date) || (b.created_at || '').localeCompare(a.created_at || '')); }
   async listRecurring() { return this._getAll('recurring'); }
+  async listGoals() { return (await this._getAll('goals')).sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '')); }
+  async listSavingsEntries() { return (await this._getAll('sentries')).sort((a, b) => b.date.localeCompare(a.date) || (b.created_at || '').localeCompare(a.created_at || '')); }
+  saveGoal(g) { return this._put('goals', { auto_day: 1, auto_skip: [], ...pick(g, GOAL_FIELDS), id: g.id || uuid(), created_at: g.created_at || new Date().toISOString(), target_amount: +g.target_amount }); }
+  saveSavingsEntry(e) { return this._put('sentries', { ...pick(e, SENT_FIELDS), id: e.id || uuid(), created_at: e.created_at || new Date().toISOString(), amount: +e.amount }); }
+  async deleteGoal(id) { for (const e of (await this._getAll('sentries')).filter(e => e.goal_id === id)) await this._tx('sentries', 'readwrite', s => s.delete(e.id)); return this._tx('goals', 'readwrite', s => s.delete(id)); }
+  deleteSavingsEntry(id) { return this._tx('sentries', 'readwrite', s => s.delete(id)); }
+  async insertGeneratedSavings(list) { const ex = await this.listSavingsEntries(); const out = []; for (const e of list) if (!ex.some(x => x.goal_id === e.goal_id && x.auto_date === e.auto_date)) out.push(await this.saveSavingsEntry(e)); return out; }
   saveCategory(c) { return this._put('categories', { archived: false, sort: 0, ...pick(c, CAT_FIELDS), id: c.id || uuid() }); }
   saveTransaction(t) { return this._put('transactions', { ...pick(t, TX_FIELDS), id: t.id || uuid(), created_at: t.created_at || new Date().toISOString(), amount: +t.amount }); }
   saveRecurring(r) { return this._put('recurring', { active: true, skip_months: [], ...pick(r, REC_FIELDS), id: r.id || uuid(), created_at: r.created_at || new Date().toISOString(), amount: +r.amount }); }
@@ -358,14 +381,14 @@ class LocalStore {
   async receiptBlob(path) { const r = await this._tx('blobs', 'readonly', s => s.get(path)); if (!r) throw new Error('הקבלה לא נמצאה'); return r.buf ? new Blob([r.buf], { type: r.type }) : r.blob; }
   async receiptUrl(path) { return URL.createObjectURL(await this.receiptBlob(path)); }
   deleteReceipt(path) { return this._tx('blobs', 'readwrite', s => s.delete(path)); }
-  async loadAll() { const [cats, txs, recurring, settings] = await Promise.all([this.listCategories(), this.listTransactions(), this.listRecurring(), this.getSettings()]); return { cats, txs, recurring, settings }; }
+  async loadAll() { const [cats, txs, recurring, settings, goals, sentries] = await Promise.all([this.listCategories(), this.listTransactions(), this.listRecurring(), this.getSettings(), this.listGoals(), this.listSavingsEntries()]); return { cats, txs, recurring, settings, goals, sentries }; }
   isPending() { return false; }
   get status() { return { state: 'local', pending: 0 }; }
   onStatus(cb) { cb(this.status); }
   onFailed() {}
   warm() {}
   syncNow() {}
-  async wipe() { for (const s of ['categories', 'transactions', 'recurring', 'kv', 'blobs']) await this._tx(s, 'readwrite', st => st.clear()); }
+  async wipe() { for (const s of ['categories', 'transactions', 'recurring', 'kv', 'blobs', 'goals', 'sentries']) await this._tx(s, 'readwrite', st => st.clear()); }
 }
 
 export function createStore() {

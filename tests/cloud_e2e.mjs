@@ -57,8 +57,8 @@ try {
   const pub = await fetch(`${URL_}/storage/v1/object/public/budget-receipts/${path}`); assert.notEqual(pub.status, 200); ok(`public URL for receipt refused (${pub.status})`);
   const anonList = await anonC.from('budget_transactions').select('*'); assert.ok(anonList.error || anonList.data.length === 0); ok('anonymous client sees no rows');
   // B: isolation
-  for (const t of ['budget_transactions', 'budget_categories', 'budget_recurring', 'budget_settings']) { const { data, error } = await b.from(t).select('*'); if (error) throw error; assert.equal(data.length, 0, t); }
-  ok('B (a self-registered stranger) sees 0 of A\'s rows in all 4 tables');
+  for (const t of ['budget_transactions', 'budget_categories', 'budget_recurring', 'budget_settings', 'budget_savings_goals', 'budget_savings_entries']) { const { data, error } = await b.from(t).select('*'); if (error) throw error; assert.equal(data.length, 0, t); }
+  ok('B (a self-registered stranger) sees 0 of A\'s rows in all 6 tables');
   const bUpd = await b.from('budget_transactions').update({ amount: 1 }).eq('id', txId).select(); assert.equal(bUpd.data?.length || 0, 0); ok('B cannot update A\'s transaction');
   const bDel = await b.from('budget_transactions').delete().eq('id', txId).select(); assert.equal(bDel.data?.length || 0, 0); ok('B cannot delete A\'s transaction');
   const bIns = await b.from('budget_transactions').insert({ user_id: uidA, kind: 'expense', amount: 5 }); assert.ok(bIns.error); ok('B cannot insert rows as A');
@@ -69,6 +69,36 @@ try {
   const bUp = await b.storage.from('budget-receipts').upload(`${uidA}/evil.jpg`, file, { contentType: 'image/jpeg' }); assert.ok(bUp.error); ok('B cannot upload into A\'s folder');
   const bRm = await b.storage.from('budget-receipts').remove([path]); const still = await a.storage.from('budget-receipts').download(path); assert.ok(!still.error); ok('B cannot delete A\'s receipt');
   const { data: after } = await a.from('budget_transactions').select('amount').eq('id', txId).single(); assert.equal(+after.amount, 1290); ok('A\'s data unchanged after attacks');
+  // ---- v5 savings tables: goals + entries (same RLS model) ----
+  const sg = await a.from('budget_savings_goals').insert({ name: 'חופשה', target_amount: 9000, target_date: month + '-28', scope: 'personal', auto_amount: 500, auto_day: 5 }).select().single(); if (sg.error) throw sg.error;
+  const goalId = sg.data.id; assert.equal(sg.data.user_id, uidA); ok('A creates a savings goal (user_id defaults to auth.uid())');
+  const se1 = await a.from('budget_savings_entries').insert({ id: crypto.randomUUID(), goal_id: goalId, kind: 'deposit', amount: 1200, date: month + '-02' }).select().single(); if (se1.error) throw se1.error;
+  const autoRow = { id: crypto.randomUUID(), goal_id: goalId, kind: 'deposit', amount: 500, date: month + '-05', auto_date: month + '-05', notes: 'הפקדה חודשית אוטומטית' };
+  const au1 = await a.from('budget_savings_entries').upsert(autoRow, { onConflict: 'user_id,goal_id,auto_date', ignoreDuplicates: true }).select();
+  const au2 = await a.from('budget_savings_entries').upsert({ ...autoRow, id: crypto.randomUUID() }, { onConflict: 'user_id,goal_id,auto_date', ignoreDuplicates: true }).select();
+  assert.equal(au1.data.length, 1); assert.equal(au2.data.length, 0); ok('automatic monthly deposit is idempotent (unique per goal + auto_date)');
+  const reUp = await a.from('budget_savings_entries').upsert({ id: se1.data.id, goal_id: goalId, kind: 'deposit', amount: 1300, date: month + '-02' }, { onConflict: 'id' }).select(); assert.equal(+reUp.data[0].amount, 1300); ok('client-UUID upsert (outbox retry) updates instead of duplicating');
+  const bad1 = await a.from('budget_savings_entries').insert({ goal_id: goalId, kind: 'deposit', amount: -5 }); assert.ok(bad1.error);
+  const bad2 = await a.from('budget_savings_entries').insert({ goal_id: goalId, kind: 'gift', amount: 5 }); assert.ok(bad2.error);
+  const bad3 = await a.from('budget_savings_goals').insert({ name: 'x', target_amount: 0 }); assert.ok(bad3.error);
+  const bad4 = await a.from('budget_savings_goals').insert({ name: 'x', target_amount: 5, scope: 'family' }); assert.ok(bad4.error); ok('constraints reject negative amount, bad kind, zero target, bad scope');
+  for (const t of ['budget_savings_goals', 'budget_savings_entries']) { const { data, error } = await b.from(t).select('*'); if (error) throw error; assert.equal(data.length, 0); }
+  ok('B (a stranger) sees 0 of A\'s savings goals and entries');
+  assert.equal((await b.from('budget_savings_goals').update({ target_amount: 1 }).eq('id', goalId).select()).data?.length || 0, 0);
+  assert.equal((await b.from('budget_savings_entries').update({ amount: 1 }).eq('id', se1.data.id).select()).data?.length || 0, 0); ok('B cannot update A\'s savings rows');
+  assert.equal((await b.from('budget_savings_entries').delete().eq('id', se1.data.id).select()).data?.length || 0, 0);
+  assert.equal((await b.from('budget_savings_goals').delete().eq('id', goalId).select()).data?.length || 0, 0); ok('B cannot delete A\'s savings rows');
+  assert.ok((await b.from('budget_savings_goals').insert({ user_id: uidA, name: 'evil', target_amount: 5 })).error); ok('B cannot insert a goal as A');
+  assert.ok((await b.from('budget_savings_entries').insert({ goal_id: goalId, kind: 'withdrawal', amount: 5 })).error); ok('B cannot add an entry to A\'s goal');
+  assert.ok((await b.from('budget_savings_entries').insert({ user_id: uidA, goal_id: goalId, kind: 'withdrawal', amount: 5 })).error); ok('B cannot add an entry to A\'s goal even by forging user_id');
+  const bGoal = await b.from('budget_savings_goals').insert({ name: 'שלי', target_amount: 100 }).select().single(); if (bGoal.error) throw bGoal.error;
+  assert.ok((await a.from('budget_savings_entries').insert({ goal_id: bGoal.data.id, kind: 'deposit', amount: 5 })).error); ok('A cannot attach an entry to B\'s goal');
+  const { data: still2 } = await a.from('budget_savings_entries').select('amount').eq('goal_id', goalId); assert.equal(still2.length, 2); assert.equal(still2.reduce((x, r) => x + +r.amount, 0), 1800); ok('A\'s savings unchanged after attacks (2 entries, 1800)');
+  assert.equal((await anonC.from('budget_savings_goals').select('*')).data?.length || 0, 0); ok('anonymous client sees no savings');
+  const del = await a.from('budget_savings_goals').delete().eq('id', goalId).select(); assert.equal(del.data.length, 1);
+  assert.equal((await a.from('budget_savings_entries').select('id').eq('goal_id', goalId)).data.length, 0); ok('deleting a goal cascades to its entries');
+  // the expense side is untouched by savings: A's transactions still sum as before
+  const { data: mine2 } = await a.from('budget_transactions').select('amount,kind'); assert.equal(mine2.filter(t => t.kind === 'expense').reduce((x, t) => x + +t.amount, 0), 4490); ok('savings never appear in the transactions table / expense totals');
   console.log('ALL CLOUD CHECKS PASSED');
   if (KEEP) console.log('KEPT_TEST_USER', A, '(password in env BUDGET_TEST_PASSWORD of this run only)');
 } finally { if (!KEEP) await cleanup(); }
