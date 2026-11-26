@@ -49,7 +49,7 @@ python3 tests/ui_preview.py      # screenshots to /workspace/budget-app-preview
 - Open sign-up with email confirmation; every user isolated by RLS and a per-user storage folder.
 - `js/config.js` holds only the project URL and the anon (public) key.
 - Owner user `studioimage1983@gmail.com` exists and is confirmed. First sign-in: magic link or "forgot password".
-- Custom SMTP (Gmail, smtp.gmail.com:465, sender "ניהול תקציב") plus Hebrew RTL templates from `supabase/email/`,
+- Custom SMTP (Gmail thebrand83@gmail.com, smtp.gmail.com:465, sender "ניהול תקציב") plus Hebrew RTL templates from `supabase/email/`,
   applied by `node scripts/smtp.mjs --ref <ref>` (needs `GMAIL_APP_PASSWORD` in env). See `docs/email-smtp-he.md`.
 - Everything budget-related was removed from the photo-guides project (`aqsdvzesnqtmnlkyrkeo`).
 - Not published: GitHub Pages is off, repo is private.
