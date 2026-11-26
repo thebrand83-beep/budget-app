@@ -7,10 +7,14 @@ export const daysInMonth = (y, m) => new Date(y, m, 0).getDate(); // m: 1..12
 export function addMonths(key, n) { const [y, m] = key.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; }
 export function monthRange(fromKey, toKey) { const out = []; for (let k = fromKey; k <= toKey; k = addMonths(k, 1)) out.push(k); return out; }
 export function occurrenceDate(rec, key) { const [y, m] = key.split('-').map(Number); return `${key}-${pad(Math.min(rec.day_of_month || 1, daysInMonth(y, m)))}`; }
+// One occurrence per rule per MONTH: an occurrence whose date was edited inside the month (or moved) is still "the" occurrence.
+const haveKeys = txs => new Set(txs.filter(t => t.recurring_id).map(t => t.recurring_id + '|' + monthKey(t.date)));
+export const recHas = (have, r, date) => have.has(r.id + '|' + monthKey(date));
 export const round2 = x => Math.round((+x + Number.EPSILON) * 100) / 100;
 
 function recActiveIn(rec, key) {
   if (!rec.active) return false;
+  if ((rec.skip_months || []).includes(key)) return false; // this month's occurrence was deleted on purpose
   if (rec.start_month && key < monthKey(rec.start_month)) return false;
   if (rec.end_month && key > monthKey(rec.end_month)) return false;
   return true;
@@ -18,7 +22,7 @@ function recActiveIn(rec, key) {
 
 /** Recurring occurrences whose date has arrived (<= today) and that aren't recorded yet. */
 export function dueRecurring(recurring, txs, today = todayStr()) {
-  const have = new Set(txs.filter(t => t.recurring_id).map(t => t.recurring_id + '|' + t.date));
+  const have = haveKeys(txs);
   const out = [];
   for (const r of recurring) {
     if (!r.active) continue;
@@ -28,7 +32,7 @@ export function dueRecurring(recurring, txs, today = todayStr()) {
     for (const key of monthRange(start, monthKey(today))) {
       if (!recActiveIn(r, key)) continue;
       const date = occurrenceDate(r, key);
-      if (date > today || have.has(r.id + '|' + date)) continue;
+      if (date > today || recHas(have, r, date)) continue;
       out.push({ kind: r.kind, amount: +r.amount, date, category_id: r.category_id || null, scope: r.scope, title: r.title, notes: r.notes || null, recurring_id: r.id });
     }
   }
@@ -37,14 +41,14 @@ export function dueRecurring(recurring, txs, today = todayStr()) {
 
 /** Recurring items still expected later in the given month (not yet recorded). */
 export function plannedFor(recurring, txs, key, today = todayStr()) {
-  const have = new Set(txs.filter(t => t.recurring_id).map(t => t.recurring_id + '|' + t.date));
+  const have = haveKeys(txs);
   const out = [];
   if (key < monthKey(today)) return out;
   for (const r of recurring) {
     if (!recActiveIn(r, key)) continue;
     const date = occurrenceDate(r, key);
     if (date <= today && key === monthKey(today)) continue; // already due → auto-added
-    if (have.has(r.id + '|' + date)) continue;
+    if (recHas(have, r, date)) continue;
     out.push({ planned: true, id: 'plan-' + r.id + '-' + date, kind: r.kind, amount: +r.amount, date, category_id: r.category_id, scope: r.scope, title: r.title, recurring_id: r.id });
   }
   return out.sort((a, b) => a.date.localeCompare(b.date));

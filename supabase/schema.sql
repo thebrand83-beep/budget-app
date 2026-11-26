@@ -41,6 +41,12 @@ create table if not exists public.budget_recurring (
   foreign key (category_id, user_id) references public.budget_categories(id, user_id) on delete set null (category_id)
 );
 
+-- v2: months in which a recurring item was deliberately skipped (its occurrence was deleted), 'YYYY-MM'
+alter table public.budget_recurring add column if not exists skip_months text[] not null default '{}';
+alter table public.budget_recurring drop constraint if exists budget_recurring_skip_months_chk;
+alter table public.budget_recurring add constraint budget_recurring_skip_months_chk
+  check (cardinality(skip_months) <= 600 and array_to_string(skip_months, ',') ~ '^([0-9]{4}-[0-9]{2}(,[0-9]{4}-[0-9]{2})*)?$');
+
 create table if not exists public.budget_transactions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
@@ -118,3 +124,4 @@ create policy budget_receipts_update on storage.objects for update to authentica
   with check (bucket_id = 'budget-receipts' and (storage.foldername(name))[1] = (select auth.uid())::text);
 create policy budget_receipts_delete on storage.objects for delete to authenticated
   using (bucket_id = 'budget-receipts' and (storage.foldername(name))[1] = (select auth.uid())::text);
+notify pgrst, 'reload schema';

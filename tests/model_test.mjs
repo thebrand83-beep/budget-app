@@ -18,4 +18,18 @@ assert.equal(M.monthSummary(txs, rec, '2026-11', 'business', today).projected, -
 const t = M.turnover(txs, 2026, 122833, today);
 assert.equal(t.ytd, 1800.5); assert.ok(t.projection > t.ytd);
 assert.equal(M.addMonths('2026-12', 1), '2027-01');
+
+// v2: one occurrence per rule per month (an occurrence whose date was edited is not re-added), and skipped months
+{
+  const r = [{ id: 'm1', active: true, kind: 'expense', amount: 100, day_of_month: 5, start_month: '2026-10-01', scope: 'personal', title: 'x' }];
+  const moved = [{ id: 'a', recurring_id: 'm1', date: '2026-10-05', kind: 'expense', amount: 100, scope: 'personal' },
+                 { id: 'b', recurring_id: 'm1', date: '2026-11-09', kind: 'expense', amount: 100, scope: 'personal' }]; // Nov occurrence moved from 5th to 9th
+  assert.equal(M.dueRecurring(r, moved, '2026-11-26').length, 0, 'edited date inside the month is not duplicated');
+  assert.equal(M.plannedFor(r, moved, '2026-11', '2026-11-02').length, 0, 'not planned again either');
+  const skipped = [{ ...r[0], skip_months: ['2026-11'] }];
+  assert.deepEqual(M.dueRecurring(skipped, [moved[0]], '2026-11-26').map(d => d.date), [], 'deleted-on-purpose month stays deleted');
+  assert.deepEqual(M.dueRecurring(skipped, [moved[0]], '2026-12-26').map(d => d.date), ['2026-12-05'], 'following months continue');
+  const ended = [{ ...r[0], end_month: '2026-10-01' }];
+  assert.equal(M.dueRecurring(ended, [moved[0]], '2026-12-26').length, 0, 'stopped rule adds nothing after end_month');
+}
 console.log('model tests: PASS');

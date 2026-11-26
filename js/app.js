@@ -22,6 +22,7 @@ const dayLabel = d => new Date(d + 'T12:00').toLocaleDateString('he-IL', { weekd
 const KIND = { income: 'הכנסה', expense: 'הוצאה' }, SCOPE = { business: 'עסקי', personal: 'פרטי' };
 const PAY = ['אשראי', 'העברה בנקאית', 'ביט / פייבוקס', 'מזומן', 'הוראת קבע', 'צ׳ק'];
 const GKEY = 'budget.geminiKey';
+const APP_VERSION = document.querySelector('meta[name=app-version]')?.content || '1';
 
 function toast(msg, ms = 2600) { $$('.toast').forEach(x => x.remove()); const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), ms); }
 function errMsg(e) {
@@ -36,7 +37,16 @@ function errMsg(e) {
   if (/Failed to fetch|NetworkError|network/i.test(m)) return 'אין חיבור לאינטרנט. נסה שוב';
   if (/mime|file type/i.test(m)) return 'סוג הקובץ לא נתמך (תמונה או PDF בלבד)';
   if (/size|too large|exceeded/i.test(m)) return 'הקובץ גדול מדי (עד 15MB)';
-  return m || 'משהו השתבש';
+  if (e?.code === 'TIMEOUT' || /TIMEOUT/.test(m)) return 'השרת לא ענה בזמן. בדוק את החיבור ונסה שוב';
+  if (e?.code === 'SESSION_EXPIRED' || /JWT|token is expired|refresh token/i.test(m)) return 'פג תוקף ההתחברות. צא והתחבר מחדש';
+  if (e?.code === 'NOT_FOUND') return 'התנועה כבר לא קיימת (אולי נמחקה ממכשיר אחר). מרענן…';
+  if (e?.code === '42501' || /row-level security|permission denied/i.test(m)) return 'אין הרשאה לשנות את הפריט הזה';
+  if (e?.code === '23505' || /duplicate key/i.test(m)) return 'הפריט הזה כבר קיים';
+  if (e?.code === '23503' || /foreign key/i.test(m)) return 'הקטגוריה או התנועה הקבועה כבר לא קיימות. רענן ונסה שוב';
+  if (e?.code === '23514' || /check constraint/i.test(m)) return 'אחד הערכים לא תקין (סכום, תאריך או אורך טקסט)';
+  if (e?.code === 'PGRST204' || /schema cache|column/i.test(m)) return 'האפליקציה התעדכנה. רענן את הדף ונסה שוב';
+  console.error(e);
+  return m ? 'שגיאה: ' + m : 'משהו השתבש. נסה שוב';
 }
 
 // ---------------------------------------------------------------- state
@@ -58,7 +68,12 @@ async function boot() {
     if (ev === 'SIGNED_OUT') { S.user = null; renderAuth(); }
     else if (ev === 'SIGNED_IN' && user && !S.loaded) { S.user = user; afterLogin(); }
   });
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    const hadSW = !!navigator.serviceWorker.controller; let reloaded = false;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => addEventListener('focus', () => reg.update().catch(() => {}))).catch(() => {});
+    // a new version took over: reload once (only when no form is open) so the new code runs
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (!hadSW || reloaded) return; const go = () => { if ($('.overlay')) return setTimeout(go, 3000); reloaded = true; location.reload(); }; go(); });
+  }
   $('#btnSettings').onclick = () => S.user ? openSettings() : null;
   $('#fab').onclick = () => openTxForm();
   if (!S.user) return renderAuth();
@@ -82,8 +97,8 @@ async function loadAll() {
   Object.assign(S, { cats, txs, recurring, settings });
 }
 let lastRefresh = 0;
-async function refresh(quiet) {
-  if (S.store.mode !== 'cloud' || !S.user || Date.now() - lastRefresh < 20000 || $('.overlay')) return;
+async function refresh(quiet, force) {
+  if (S.store.mode !== 'cloud' || !S.user || (!force && (Date.now() - lastRefresh < 20000 || $('.overlay')))) return;
   lastRefresh = Date.now();
   try { await loadAll(); await runRecurring(); render(); } catch (e) { if (!quiet) toast(errMsg(e)); }
 }
@@ -155,7 +170,7 @@ function bindToolbar() {
 }
 function render() {
   const fn = { overview: viewOverview, tx: viewTx, budgets: viewBudgets, recurring: viewRecurring, reports: viewReports }[S.view];
-  $('#app').innerHTML = `<section class="view">${toolbar()}${fn()}</section><div class="foot">הנתונים מוגנים: כל שורה וכל קבלה שייכות רק לחשבון שלך</div>`;
+  $('#app').innerHTML = `<section class="view">${toolbar()}${fn()}</section><div class="foot">הנתונים מוגנים: כל שורה וכל קבלה שייכות רק לחשבון שלך · גרסה ${APP_VERSION}</div>`;
   bindToolbar(); bindView();
 }
 const cat = id => S.cats.find(c => c.id === id);
@@ -198,9 +213,15 @@ function viewOverview() {
       ${tips.map(tipHTML).join('')}
       <div class="ai-row">${localStorage.getItem(GKEY) ? `<button class="btn sm" id="aiBtn">${ic('spark')} ${S.ai?.tips ? 'רענן' : 'קבל'} טיפים חכמים מ-Gemini</button>` : `<button class="btn sm" id="aiSetup">${ic('spark')} טיפים חכמים עם Gemini (הגדרה)</button>`}<span class="dim small" id="aiStatus">${S.ai?.model ? 'נוצר עם ' + esc(S.ai.model) + ' · נשלחים רק סכומים מצרפיים' : 'נשלחים רק סכומים מצרפיים, בלי פרטים או קבלות'}</span></div>
     </div>
+    ${recentCard(sm)}
     ${S.scope !== 'personal' ? turnoverCard(to) : ''}
     ${bw.length ? `<div class="card"><h3>${ic('target')} תקציבים שדורשים תשומת לב</h3>${bw.map(budgetRow).join('')}</div>` : ''}
   </div>`;
+}
+function recentCard(sm) {
+  const list = [...sm.list].sort((a, b) => b.date.localeCompare(a.date) || String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 6);
+  return `<div class="card"><h3>${ic('list')} תנועות אחרונות<span class="sp"></span><button class="btn sm" data-view="tx">לכל התנועות</button></h3>
+    ${list.length ? list.map(txRow).join('') + '<div class="dim small" style="margin-top:6px">לחיצה על תנועה פותחת עריכה ומחיקה</div>' : '<div class="empty">אין עדיין תנועות החודש. לחץ על + כדי להוסיף.</div>'}</div>`;
 }
 const tipHTML = t => `<div class="tip ${t.level}"><div class="ic">${esc(t.icon)}</div><div><b>${esc(t.title)}</b><p>${esc(t.text)}</p></div></div>`;
 function turnoverCard(to) {
@@ -247,8 +268,8 @@ function txRow(t) {
   return `<button class="tx ${t.planned ? 'planned' : ''}" data-tx="${t.id}">
     <span class="cat-ic" style="background:${c ? c.color : '#6f6a62'}22;color:${c ? c.color : '#a39c90'}">${esc(c ? c.icon : '•')}</span>
     <span class="mid"><span class="t1">${esc(t.title || c?.name || KIND[t.kind])}</span>
-      <span class="t2">${t.planned ? '<span class="badge warn">צפוי</span>' : ''}${c ? esc(c.name) : ''}${t.scope === 'business' ? ' <span class="badge biz">עסקי</span>' : ''}${t.recurring_id ? ` ${ic('repeat', 'i')}`.replace('class="i"', 'class="i" style="width:13px;height:13px"') : ''}${t.receipt_path ? `<span class="rc">${ic('receipt').replace('class="i"', 'class="i" style="width:14px;height:14px"')}</span>` : ''}</span></span>
-    <span class="amt num ${t.kind === 'income' ? 'in' : ''}">${t.kind === 'income' ? '+' : '-'}${fmt(t.amount)}</span></button>`;
+      <span class="t2">${t.planned ? '<span class="badge warn">צפוי</span>' : ''}${c ? esc(c.name) : ''}${t.scope === 'business' ? ' <span class="badge biz">עסקי</span>' : ''}${t.recurring_id && !t.planned ? ` <span class="badge rec">${ic('repeat')}חוזר</span>` : ''}${t.receipt_path ? `<span class="rc">${ic('receipt').replace('class="i"', 'class="i" style="width:14px;height:14px"')}</span>` : ''}</span></span>
+    <span class="amt num ${t.kind === 'income' ? 'in' : ''}">${t.kind === 'income' ? '+' : '-'}${fmt(t.amount)}</span><span class="edit-hint" aria-hidden="true">${ic('edit')}</span></button>`;
 }
 
 // ---------------------------------------------------------------- budgets
@@ -319,7 +340,7 @@ function openRecForm(r = null) {
     if (!r.id) r.id = uuid();
     try { const saved = await S.store.saveRecurring(r); S.recurring = S.recurring.filter(x => x.id !== saved.id).concat(saved); await runRecurring(); closeSheet(); toast('נשמר'); render(); } catch (e) { toast(errMsg(e)); }
   };
-  if (!isNew) $('#rDel').onclick = async () => { if (!confirm('למחוק את התנועה הקבועה? תנועות שכבר נרשמו יישארו.')) return; try { await S.store.deleteRecurring(r.id); S.recurring = S.recurring.filter(x => x.id !== r.id); closeSheet(); render(); } catch (e) { toast(errMsg(e)); } };
+  if (!isNew) $('#rDel').onclick = async () => { if (await ask('למחוק את התנועה הקבועה?', 'תנועות שכבר נרשמו יישארו ברשימה.', [{ k: 'del', label: 'מחיקה', cls: 'danger' }]) !== 'del') return; try { await S.store.deleteRecurring(r.id); S.recurring = S.recurring.filter(x => x.id !== r.id); closeSheet(); render(); } catch (e) { toast(errMsg(e)); } };
 }
 
 // ---------------------------------------------------------------- reports
@@ -363,6 +384,8 @@ function reportSelection() {
 function openTxForm(t = null) {
   const isNew = !t; t = t ? { ...t } : { kind: 'expense', scope: S.scope === 'personal' ? 'personal' : 'business', date: M.monthKey(M.todayStr()) === S.month ? M.todayStr() : S.month + '-01' };
   let file = null, removeReceipt = false;
+  const linked = t.recurring_id ? S.recurring.find(r => r.id === t.recurring_id) || null : null;
+  const origDate = t.date;
   sheet(`<h2>${isNew ? 'תנועה חדשה' : 'עריכת תנועה'}<span class="sp"></span><button class="icon-btn" data-close>${ic('x')}</button></h2>
     <div class="kind-seg"><button data-k="expense" class="${t.kind === 'expense' ? 'on' : ''}">הוצאה</button><button data-k="income" class="${t.kind === 'income' ? 'on' : ''}">הכנסה</button></div>
     <div class="amount-box"><span>₪</span><input id="fAmt" inputmode="decimal" placeholder="0" value="${t.amount ?? ''}" autocomplete="off"></div>
@@ -374,7 +397,8 @@ function openTxForm(t = null) {
     <div class="field"><label>קבלה</label><div class="receipt-box" id="rcBox"></div>
       <input type="file" id="fCam" accept="image/*" capture="environment" hidden><input type="file" id="fFile" accept="image/*,application/pdf" hidden></div>
     <div class="field"><label>הערות</label><textarea class="inp" id="fNotes" placeholder="מספר קבלה, פרטי לקוח, כל מה שיעזור לרואה החשבון">${esc(t.notes || '')}</textarea></div>
-    ${isNew ? `<label class="check"><input type="checkbox" id="fRec"> לחזור על זה כל חודש (תנועה קבועה)</label>` : t.recurring_id ? `<p class="muted small">${ic('repeat')} נוצר מתנועה קבועה</p>` : ''}
+    <label class="rec-toggle" for="fRec"><span class="rt-txt"><b>${ic('repeat')} חוזר כל חודש</b><span class="dim small" id="fRecHint"></span></span><input type="checkbox" id="fRec" class="sw-input" ${linked ? 'checked' : ''}><span class="switch-ui" aria-hidden="true"></span></label>
+    ${linked ? `<label class="check small" id="fRecUpdWrap"><input type="checkbox" id="fRecUpd" checked> לעדכן את הסכום והפרטים גם בחודשים הבאים</label>` : ''}
     <div class="sheet-actions">${!isNew ? `<button class="btn danger" id="fDel" aria-label="מחיקה">${ic('trash')}</button>` : ''}<button class="btn gold" id="fSave">${isNew ? 'הוספה' : 'שמירה'}</button></div>`);
   const drawCats = () => $('#fCats').innerHTML = S.cats.filter(c => c.kind === t.kind && !c.archived).map(c => `<button data-c="${c.id}" class="${t.category_id === c.id ? 'on' : ''}" style="--c:${c.color}">${esc(c.icon)} ${esc(c.name)}</button>`).join('');
   const drawRc = async () => {
@@ -397,31 +421,77 @@ function openTxForm(t = null) {
   $$('.kind-seg button').forEach(b => b.onclick = () => { t.kind = b.dataset.k; t.category_id = null; $$('.kind-seg button').forEach(x => x.classList.toggle('on', x === b)); drawCats(); });
   $('#fCats').onclick = e => { const b = e.target.closest('[data-c]'); if (!b) return; t.category_id = t.category_id === b.dataset.c ? null : b.dataset.c; drawCats(); };
   $$('#fScope button').forEach(b => b.onclick = () => { t.scope = b.dataset.s; $$('#fScope button').forEach(x => x.classList.toggle('on', x === b)); });
+  const recHint = () => { const on = $('#fRec').checked, d = +($('#fDate').value || t.date).slice(8, 10);
+    $('#fRecHint').textContent = on ? `יירשם אוטומטית ב-${d} בכל חודש${linked ? '' : ', החל מהחודש של התאריך'}` : linked ? 'כיבוי יפסיק את החזרה מהחודש הזה והלאה' : 'כבוי: תנועה חד-פעמית';
+    $('#fRecUpdWrap')?.classList.toggle('hidden', !on); };
+  $('#fRec').onchange = recHint; $('#fDate').onchange = recHint; recHint();
   if (isNew) setTimeout(() => $('#fAmt')?.focus(), 250);
   $('#fSave').onclick = async () => {
     const amount = +String($('#fAmt').value).replace(/[^\d.]/g, '');
     if (!(amount > 0)) return toast('הזן סכום'); if (!$('#fDate').value) return toast('בחר תאריך');
-    const btn = $('#fSave'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
+    const btn = $('#fSave'), label = btn.textContent; btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
     Object.assign(t, { amount: M.round2(amount), date: $('#fDate').value, title: $('#fTitle').value.trim() || null, notes: $('#fNotes').value.trim() || null, payment_method: $('#fPay').value || null });
     if (!t.id) t.id = uuid();
-    const oldPath = t.receipt_path;
+    const oldPath = t.receipt_path, wantRec = $('#fRec').checked;
+    let newRule = null;
     try {
       if (file) Object.assign(t, await S.store.uploadReceipt(t.id, file));
       else if (removeReceipt) Object.assign(t, { receipt_path: null, receipt_name: null, receipt_type: null });
-      if (isNew && $('#fRec')?.checked) {
-        const r = await S.store.saveRecurring({ id: uuid(), kind: t.kind, amount: t.amount, category_id: t.category_id || null, scope: t.scope, title: t.title || cat(t.category_id)?.name || KIND[t.kind], day_of_month: +t.date.slice(8, 10), start_month: M.monthKey(t.date) + '-01', active: true, notes: t.notes });
-        S.recurring.push(r); t.recurring_id = r.id;
-      }
+      const ruleFields = () => ({ kind: t.kind, amount: t.amount, category_id: t.category_id || null, scope: t.scope, title: (t.title || cat(t.category_id)?.name || KIND[t.kind]).slice(0, 120), day_of_month: +t.date.slice(8, 10) });
+      if (wantRec && !linked) { // turn ON: new monthly rule from this entry, starting in its month
+        newRule = await S.store.saveRecurring({ id: uuid(), ...ruleFields(), start_month: M.monthKey(t.date) + '-01', active: true, notes: t.notes, skip_months: [] });
+        S.recurring.push(newRule); t.recurring_id = newRule.id;
+      } else if (wantRec && linked) {
+        let r = { ...linked };
+        if ($('#fRecUpd')?.checked) r = { ...r, ...ruleFields() };
+        // moved to another month: don't let the rule re-create the occurrence in the month it left
+        if (M.monthKey(origDate) !== M.monthKey(t.date)) r.skip_months = [...new Set([...(r.skip_months || []), M.monthKey(origDate)])];
+        if (JSON.stringify(r) !== JSON.stringify(linked)) Object.assign(linked, await S.store.saveRecurring(r));
+      } else if (!wantRec && linked) t.recurring_id = null;
       const saved = await S.store.saveTransaction(t);
+      if (!wantRec && linked) await stopRule(linked, t.date, t.id);
       if (oldPath && oldPath !== saved.receipt_path) S.store.deleteReceipt(oldPath).catch(() => {});
       S.txs = [saved, ...S.txs.filter(x => x.id !== saved.id)].sort((a, b) => b.date.localeCompare(a.date));
-      closeSheet(); toast(isNew ? 'נוסף ✓' : 'נשמר ✓'); render();
+      closeSheet(); toast(isNew ? 'נוסף ✓' : 'נשמר ✓');
+      if (wantRec) await runRecurring().catch(e => toast(errMsg(e), 5000));
+      render();
     } catch (e) {
       if (file && t.receipt_path && t.receipt_path !== oldPath) S.store.deleteReceipt(t.receipt_path).catch(() => {});
-      t.receipt_path = oldPath; toast(errMsg(e), 4000); btn.disabled = false; btn.textContent = 'שמירה';
+      if (newRule) { S.store.deleteRecurring(newRule.id).catch(() => {}); S.recurring = S.recurring.filter(r => r.id !== newRule.id); t.recurring_id = null; }
+      t.receipt_path = oldPath; btn.disabled = false; btn.textContent = label;
+      toast(errMsg(e), 5000); if (e?.code === 'NOT_FOUND') { closeSheet(); refresh(false, true); }
     }
   };
-  if (!isNew) $('#fDel').onclick = async () => { if (!confirm('למחוק את התנועה' + (t.receipt_path ? ' ואת הקבלה שלה' : '') + '?')) return; try { await S.store.deleteTransaction(t); S.txs = S.txs.filter(x => x.id !== t.id); closeSheet(); toast('נמחק'); render(); } catch (e) { toast(errMsg(e)); } };
+  if (!isNew) $('#fDel').onclick = async () => {
+    const rc = t.receipt_path ? ' והקבלה שלה' : '';
+    const k = linked
+      ? await ask('למחוק את התנועה' + rc + '?', 'זו תנועה שחוזרת כל חודש.', [{ k: 'one', label: 'למחוק רק את החודש הזה', cls: 'danger' }, { k: 'stop', label: 'למחוק ולהפסיק את החזרה', cls: 'danger' }])
+      : await ask('למחוק את התנועה' + rc + '?', 'אי אפשר לבטל את הפעולה.', [{ k: 'one', label: 'מחיקה', cls: 'danger' }]);
+    if (!k) return;
+    const btn = $('#fDel'); btn.disabled = true;
+    try {
+      if (linked && k === 'one') { // skip this month so the rule doesn't add it back
+        Object.assign(linked, await S.store.saveRecurring({ ...linked, skip_months: [...new Set([...(linked.skip_months || []), M.monthKey(origDate)])] }));
+      }
+      await S.store.deleteTransaction({ ...t, date: origDate });
+      if (linked && k === 'stop') await stopRule(linked, origDate, t.id);
+      S.txs = S.txs.filter(x => x.id !== t.id); closeSheet(); toast('נמחק ✓'); render();
+    } catch (e) {
+      btn.disabled = false; toast(errMsg(e), 5000);
+      if (e?.code === 'NOT_FOUND') { S.txs = S.txs.filter(x => x.id !== t.id); closeSheet(); render(); }
+    }
+  };
+}
+
+/** Stop a recurring rule from the month of `date` onward. Deletes the rule if nothing else uses it. */
+async function stopRule(rule, date, exceptTxId) {
+  const others = S.txs.filter(x => x.recurring_id === rule.id && x.id !== exceptTxId);
+  const startKey = M.monthKey(rule.start_month || date);
+  if (!others.length || M.monthKey(date) <= startKey) {
+    await S.store.deleteRecurring(rule.id).catch(e => { if (e?.code !== 'NOT_FOUND') throw e; });
+    S.recurring = S.recurring.filter(r => r.id !== rule.id);
+    S.txs = S.txs.map(x => x.recurring_id === rule.id ? { ...x, recurring_id: null } : x);
+  } else Object.assign(rule, await S.store.saveRecurring({ ...rule, end_month: M.addMonths(M.monthKey(date), -1) + '-01' }));
 }
 
 async function compressImage(f) {
@@ -475,8 +545,8 @@ function openSettings(recovery = false) {
     $('#sOut').onclick = async () => { await S.store.signOut(); S.loaded = false; closeSheet(); location.reload(); };
     $('#sPassBtn').onclick = async () => { const p = $('#sPass').value; if (p.length < 8) return toast('לפחות 8 תווים'); try { await S.store.setPassword(p); $('#sPass').value = ''; toast('הסיסמה עודכנה ✓'); } catch (e) { toast(errMsg(e)); } };
   } else {
-    $('#sDemo').onclick = async () => { if (S.txs.length && !confirm('להוסיף נתוני דוגמה לנתונים הקיימים?')) return; await loadSample(); closeSheet(); render(); toast('נטענו נתוני דוגמה'); };
-    $('#sWipe').onclick = async () => { if (!confirm('למחוק את כל הנתונים המקומיים?')) return; await S.store.wipe(); location.reload(); };
+    $('#sDemo').onclick = async () => { if (S.txs.length && await ask('להוסיף נתוני דוגמה?', 'הם יתווספו לנתונים הקיימים.') !== 'ok') return; await loadSample(); closeSheet(); render(); toast('נטענו נתוני דוגמה'); };
+    $('#sWipe').onclick = async () => { if (await ask('למחוק את כל הנתונים המקומיים?', '', [{ k: 'del', label: 'מחיקה', cls: 'danger' }]) !== 'del') return; await S.store.wipe(); location.reload(); };
   }
   $('#sKeyBtn').onclick = async () => {
     const k = $('#sKey').value.trim(); const m = $('#sKeyMsg');
@@ -525,11 +595,23 @@ function sheet(html, { wide, stacked } = {}) {
   new MutationObserver(() => { if (!$('.overlay')) document.body.style.overflow = ''; }).observe($('#host'), { childList: true });
   return ov;
 }
+/** In-app confirm dialog. buttons: [{ k, label, cls }]. Resolves with the chosen k, or null if dismissed. */
+function ask(title, text, buttons = [{ k: 'ok', label: 'אישור', cls: 'gold' }]) {
+  return new Promise(res => {
+    const ov = document.createElement('div'); ov.className = 'overlay ask-ov';
+    ov.innerHTML = `<div class="sheet ask" role="alertdialog" aria-modal="true"><h2>${esc(title)}</h2>${text ? `<p class="muted">${esc(text)}</p>` : ''}
+      <div class="ask-btns">${buttons.map(b => `<button class="btn ${b.cls || ''}" data-ask="${b.k}">${esc(b.label)}</button>`).join('')}<button class="btn" data-ask="">ביטול</button></div></div>`;
+    const done = k => { ov.remove(); res(k || null); };
+    ov.addEventListener('click', e => { if (e.target === ov) return done(null); const b = e.target.closest('[data-ask]'); if (b) done(b.dataset.ask); });
+    document.body.appendChild(ov);
+  });
+}
 function closeSheet() { $('#host').innerHTML = ''; document.body.style.overflow = ''; }
-addEventListener('keydown', e => { if (e.key === 'Escape') { const o = $$('.overlay').pop(); o?.remove(); } });
+addEventListener('keydown', e => { if (e.key === 'Escape') { const a = $('.ask-ov'); if (a) return a.querySelector('[data-ask=""]').click(); const o = $$('#host .overlay').pop(); o?.remove(); } });
 
 // ---------------------------------------------------------------- view bindings
 function bindView() {
+  $$('#app [data-view]').forEach(el => el.onclick = () => { S.view = el.dataset.view; renderNav(); render(); scrollTo({ top: 0, behavior: 'smooth' }); });
   $$('[data-pie]').forEach(b => b.onclick = () => { S.pieKind = b.dataset.pie; render(); });
   $('#aiSetup') && ($('#aiSetup').onclick = () => openSettings());
   $('#aiBtn') && ($('#aiBtn').onclick = async () => {

@@ -281,3 +281,28 @@ section.view{animation:fade .25s}
   #printArea .pb{page-break-before:always}
   #printArea .muted{color:#666}
 }
+
+/* ---- v2: recurring toggle, recurring badge, edit hint, in-app confirm ---- */
+.badge.rec{display:inline-flex;align-items:center;gap:3px;border-color:var(--line-gold);color:var(--gold2);background:rgba(212,175,106,.08);padding:1px 7px}
+.badge.rec .i{width:11px;height:11px}
+.tx .edit-hint{color:var(--dim, #6f6a62);display:grid;place-items:center;flex:none;opacity:.55;transition:.2s}
+.tx .edit-hint .i{width:16px;height:16px}
+.tx:hover .edit-hint{opacity:1;color:var(--gold)}
+.rec-toggle{display:flex;align-items:center;gap:12px;padding:12px 14px;margin:6px 0 4px;border:1px solid var(--line2);border-radius:14px;cursor:pointer;background:rgba(255,255,255,.02);position:relative}
+.rec-toggle .rt-txt{flex:1;display:flex;flex-direction:column;gap:2px}
+.rec-toggle .rt-txt b{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.rec-toggle .rt-txt .i{width:16px;height:16px;color:var(--gold)}
+.rec-toggle .sw-input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.rec-toggle .switch-ui{width:46px;height:27px;border-radius:99px;background:rgba(255,255,255,.12);position:relative;transition:.2s;flex:none}
+.rec-toggle .switch-ui::after{content:"";position:absolute;top:3px;inset-inline-start:3px;width:21px;height:21px;border-radius:50%;background:#fff;transition:.2s var(--ease)}
+.rec-toggle .sw-input:checked + .switch-ui{background:var(--gold)}
+.rec-toggle .sw-input:checked + .switch-ui::after{inset-inline-start:22px}
+.rec-toggle:has(.sw-input:checked){border-color:var(--line-gold);background:rgba(212,175,106,.06)}
+.rec-toggle .sw-input:focus-visible + .switch-ui{outline:2px solid var(--gold);outline-offset:2px}
+.ask-ov{z-index:90;align-items:center}
+.sheet.ask{max-width:420px;border-radius:22px;border-bottom:1px solid var(--line2);margin:16px;padding:20px}
+.sheet.ask p{margin:-4px 0 14px;line-height:1.6}
+.ask-btns{display:flex;flex-direction:column;gap:8px}
+.ask-btns .btn{width:100%}
+.ask-btns .btn.danger{background:rgba(255,90,99,.1)}
+.grid>*{min-width:0} /* long one-line titles (recent card) must not widen the grid on phones */

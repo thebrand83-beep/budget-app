@@ -24,7 +24,7 @@ async def add_tx(pg, kind, amount, title, cat, scope, fixture=None, pay=None, no
     if pay: await pg.select_option('#fPay', pay)
     if notes: await pg.fill('#fNotes', notes)
     if fixture: await pg.set_input_files('#fFile', str(FX / fixture)); await pg.wait_for_timeout(700)
-    if recurring: await pg.check('#fRec')
+    if recurring: await pg.click('label.rec-toggle')
 
 async def run_desktop(b):
     ctx = await b.new_context(viewport={'width': 1440, 'height': 900}, locale='he-IL', accept_downloads=True, timezone_id='Asia/Jerusalem')
