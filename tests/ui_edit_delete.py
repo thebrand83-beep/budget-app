@@ -4,10 +4,11 @@
 # env: BUDGET_TEST_EMAIL, BUDGET_TEST_PASSWORD, BASE, MOBILE=1, ENGINE=webkit
 import asyncio, os, json, datetime
 from playwright.async_api import async_playwright
+import sys; sys.path.insert(0, os.path.dirname(__file__)); from platforms import launch
 BASE = os.environ.get('BASE', 'http://127.0.0.1:8841/')
 EMAIL, PASSWORD = os.environ['BUDGET_TEST_EMAIL'], os.environ['BUDGET_TEST_PASSWORD']
 assert EMAIL.startswith('budget-e2e-ui-'), 'test users only'
-MOBILE, WEBKIT = os.environ.get('MOBILE') == '1', os.environ.get('ENGINE') == 'webkit'
+PLATFORM = os.environ.get('PLATFORM') or ({'webkit': 'webkit'}.get(os.environ.get('ENGINE', ''), 'chrome') if os.environ.get('MOBILE') != '1' else ('iphone' if os.environ.get('ENGINE') == 'webkit' else 'android'))
 SHOTS = os.environ.get('SHOTS')
 fails, log = [], []
 def check(cond, name, extra=''):
@@ -28,9 +29,8 @@ SERVER = """async () => { const sb = window.__budget.store.sb;
 
 async def main():
     async with async_playwright() as p:
-        b = await (p.webkit.launch() if WEBKIT else p.chromium.launch(executable_path='/usr/bin/google-chrome', args=['--no-sandbox']))
-        kw = dict(viewport={'width': 390, 'height': 844}, device_scale_factor=2, has_touch=True, **({} if WEBKIT else {'is_mobile': True})) if MOBILE else dict(viewport={'width': 1440, 'height': 900})
-        ctx = await b.new_context(locale='he-IL', timezone_id='Asia/Jerusalem', **kw)
+        b, kw, MOBILE = await launch(p, PLATFORM)
+        ctx = await b.new_context(**kw)
         pg = await ctx.new_page()
         pg.on('pageerror', lambda e: log.append('pageerror: ' + str(e)))
         pg.on('dialog', lambda d: (log.append('NATIVE DIALOG (should not happen): ' + d.message), asyncio.ensure_future(d.dismiss())))
@@ -126,5 +126,6 @@ async def main():
         t2 = await toast(); check('כבר לא קיימת' in t2, 'already-deleted row shows Hebrew message (not silent)', t2)
         check(not [l for l in log if l.startswith('pageerror') or 'NATIVE' in l], 'no page errors / native dialogs', log)
         await b.close()
+    print('PLATFORM', PLATFORM)
     print('RESULT', 'FAIL ' + str(fails) if fails else 'ALL PASS')
 asyncio.run(main())

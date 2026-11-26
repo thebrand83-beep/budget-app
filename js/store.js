@@ -42,13 +42,13 @@ class CloudStore {
   async resetPassword(email) { const { error } = await this.sb.auth.resetPasswordForEmail(email, { redirectTo: location.href.split('#')[0] }); if (error) throw error; }
   async setPassword(password) { const { error } = await this.sb.auth.updateUser({ password }); if (error) throw error; }
   async signOut() { await this.sb.auth.signOut(); this.user = null; }
-  async _run(fn) {
-    try { return await withTimeout(fn()); }
+  async _run(fn, ms = TIMEOUT_MS) {
+    try { return await withTimeout(fn(), ms); }
     catch (e) {
       if (!isAuthErr(e)) throw e;
       const { error } = await withTimeout(this.sb.auth.refreshSession());
       if (error) throw Object.assign(new Error('SESSION_EXPIRED'), { code: 'SESSION_EXPIRED' });
-      return await withTimeout(fn());
+      return await withTimeout(fn(), ms);
     }
   }
   async _all(table, order) {
@@ -82,7 +82,7 @@ class CloudStore {
   async saveSettings(s) { return this._run(async () => { const { error } = await this.sb.from('budget_settings').upsert({ user_id: this.user.id, data: s, updated_at: new Date().toISOString() }); if (error) throw error; }); }
   async uploadReceipt(txId, file) {
     const path = `${this.user.id}/${txId}/${Date.now()}_${safeName(file.name)}`;
-    await this._run(async () => { const { error } = await this.sb.storage.from(CONFIG.receiptsBucket).upload(path, file, { contentType: file.type || 'application/octet-stream', upsert: false }); if (error) throw error; });
+    await this._run(async () => { const { error } = await this.sb.storage.from(CONFIG.receiptsBucket).upload(path, file, { contentType: file.type || 'application/octet-stream', upsert: false }); if (error) throw error; }, 120000); // big photos on mobile data
     return { receipt_path: path, receipt_name: file.name || 'receipt', receipt_type: file.type || '' };
   }
   async receiptUrl(path, download) {

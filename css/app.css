@@ -306,3 +306,4 @@ section.view{animation:fade .25s}
 .ask-btns .btn{width:100%}
 .ask-btns .btn.danger{background:rgba(255,90,99,.1)}
 .grid>*{min-width:0} /* long one-line titles (recent card) must not widen the grid on phones */
+.two-col{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.two-col>*{min-width:0}.inp{min-width:0;max-width:100%}input[type=month].inp,input[type=date].inp{-webkit-appearance:none;appearance:none;display:block} /* month/date inputs have a wide intrinsic size on Android Chrome */
